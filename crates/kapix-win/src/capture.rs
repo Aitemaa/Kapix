@@ -491,8 +491,14 @@ fn srgb_lut() -> Vec<u8> {
 
 /// IEEE half → f32 (normals, subnormals, inf/nan) without a lookup table.
 fn f16_to_f32(h: u16) -> f32 {
-    let mag = f32::from_bits(((h & 0x7FFF) as u32) << 13) * f32::from_bits(0x7780_0000); // * 2^112
-    if h & 0x8000 != 0 { -mag } else { mag }
+    let sign = ((h & 0x8000) as u32) << 16;
+    if h & 0x7C00 == 0x7C00 {
+        // Inf / NaN: max exponent, mantissa carried over.
+        return f32::from_bits(sign | 0x7F80_0000 | (((h & 0x03FF) as u32) << 13));
+    }
+    // Normals and subnormals: shift into place and rebias by 2^112.
+    let mag = f32::from_bits(((h & 0x7FFF) as u32) << 13) * f32::from_bits(0x7780_0000);
+    f32::from_bits(sign | mag.to_bits())
 }
 
 /// scRGB `R16G16B16A16_FLOAT` row → opaque BGRA8: scale to SDR white, clamp (a clip is the
@@ -578,7 +584,11 @@ mod tests {
         assert_eq!(f16_to_f32(0xC000), -2.0);
         assert_eq!(f16_to_f32(0x0000), 0.0);
         assert_eq!(f16_to_f32(0x3800), 0.5);
-        assert!(f16_to_f32(0x7C00).is_infinite());
+        assert_eq!(f16_to_f32(0x7C00), f32::INFINITY);
+        assert_eq!(f16_to_f32(0xFC00), f32::NEG_INFINITY);
+        assert!(f16_to_f32(0x7E00).is_nan());
+        assert_eq!(f16_to_f32(0x7BFF), 65504.0);
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
     }
 
     #[test]
