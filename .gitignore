@@ -1,4 +1,6 @@
 /target
+/target-*
 **/*.rs.bk
 *.pdb
 .DS_Store
+/snapshots-out
