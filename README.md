@@ -6,11 +6,12 @@
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-262626?style=flat-square&labelColor=0a0a0a" alt="Platform: Windows 10 | 11">
   <img src="https://img.shields.io/badge/built%20with-Rust%20%2B%20tiny--skia-262626?style=flat-square&labelColor=0a0a0a" alt="Built with Rust + tiny-skia">
   <img src="https://img.shields.io/badge/status-early%20stage-e8262d?style=flat-square&labelColor=0a0a0a" alt="Status: early stage">
-  <img src="https://img.shields.io/badge/size-~1.3%20MB-262626?style=flat-square&labelColor=0a0a0a" alt="Size: ~1.3 MB">
+  <img src="https://img.shields.io/badge/size-~1.2%20MB-262626?style=flat-square&labelColor=0a0a0a" alt="Size: ~1.2 MB">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-262626?style=flat-square&labelColor=0a0a0a" alt="License: MIT"></a>
 </p>
 
 <p align="center">
+  <a href="#screenshots">Screenshots</a> ·
   <a href="#hotkeys">Hotkeys</a> ·
   <a href="#cli">CLI</a> ·
   <a href="#workspace">Workspace</a> ·
@@ -29,9 +30,33 @@ typeface and one red accent, with light/dark following Windows.
 - Hotkey → frozen overlay, drag, copy. Snaps to windows, magnifier loupe with HEX sampler.
 - Annotate without menus: arrow, rectangle, pen, highlighter, text, irreversible pixelate, step badges.
 - One-hotkey OCR through the built-in `Windows.Media.Ocr` — zero bundled models.
-- ~1.3 MB executable, no WebView, no .NET, no network access, no telemetry.
+- ~1.2 MB executable, no WebView, no .NET, no network access, no telemetry.
 
 Full requirements: [docs/PRD.md](docs/PRD.md).
+
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/annotate-dark.png" alt="Kapix overlay in dark theme: a selection annotated with steps, arrow, rectangle, highlighter, pen and a pixelated API token, with the floating toolbar below" width="100%">
+</p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/loupe-dark.png" alt="Window snap with the magnifier loupe and HEX color sampler"></td>
+    <td width="50%"><img src="docs/screenshots/annotate-light.png" alt="The same capture in the light theme"></td>
+  </tr>
+  <tr>
+    <td align="center">Window snap, loupe and HEX sampler</td>
+    <td align="center">Light theme follows Windows</td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/screenshots/toolbar-dark.png" alt="Annotation toolbar, dark" width="49%">
+  <img src="docs/screenshots/toolbar-light.png" alt="Annotation toolbar, light, rectangle tool active" width="49%">
+</p>
+
+<sub>Rendered by Kapix's own UI code (<code>cargo run --release -p kapix-ui --example snapshots</code>) over a synthetic desktop.</sub>
 
 ## Hotkeys
 
