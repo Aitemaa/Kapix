@@ -5,6 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88"
 publish = false
 license = "MIT"
 repository = "https://github.com/Aitemaa/Kapix"
@@ -30,3 +31,13 @@ panic = "abort"
 
 [profile.dev]
 panic = "abort"
+
+# Hot pixel paths: speed over size (≈ 4× faster overlay composition at 4K for a small size cost).
+[profile.release.package.tiny-skia]
+opt-level = 3
+
+[profile.release.package.tiny-skia-path]
+opt-level = 3
+
+[profile.release.package.kapix-ui]
+opt-level = 3

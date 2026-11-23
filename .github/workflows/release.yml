@@ -1,0 +1,62 @@
+name: Release
+
+# Push a version tag (git tag v0.1.0 && git push origin v0.1.0) to build portable x64 + ARM64
+# executables with SHA-256 checksums and attach them to a draft GitHub release.
+# "Run workflow" builds them as artifacts without a release.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches the workspace version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref_type }}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc, aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build x64 and ARM64
+        run: |
+          cargo build --release -p kapix-app --target x86_64-pc-windows-msvc
+          cargo build --release -p kapix-app --target aarch64-pc-windows-msvc
+
+      - name: Stage portable executables and checksums
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/x86_64-pc-windows-msvc/release/kapix.exe dist/kapix-x64.exe
+          cp target/aarch64-pc-windows-msvc/release/kapix.exe dist/kapix-arm64.exe
+          cd dist && sha256sum kapix-*.exe > SHA256SUMS.txt && cat SHA256SUMS.txt && ls -l
+
+      - name: Attach to a draft release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          draft: true
+          generate_release_notes: true
+
+      - name: Keep as artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: kapix-${{ steps.version.outputs.version }}
+          path: dist/*

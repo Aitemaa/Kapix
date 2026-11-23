@@ -3,6 +3,7 @@ name = "kapix-ui"
 description = "Platform-independent pure-Rust frontend for Kapix: overlay state machine and CPU rendering."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 

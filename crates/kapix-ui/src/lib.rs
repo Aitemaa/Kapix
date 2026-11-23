@@ -10,11 +10,25 @@
 //! without conversion. `tiny-skia` itself thinks in RGBA, so colors must go through
 //! [`canvas::sk_color`], which swaps R and B.
 
+// Pixel-loop code reads better with `chunks_exact(4)` than `as_chunks`, and nested `if let`
+// keeps the input handlers scannable.
+#![allow(
+    clippy::chunks_exact_to_as_chunks,
+    clippy::collapsible_if,
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    clippy::excessive_precision
+)]
+
 pub mod canvas;
+mod chrome;
 pub mod font;
 pub mod overlay;
 pub mod render;
 pub mod toast;
+mod toolbar;
 
 pub use font::Font;
-pub use overlay::{CursorKind, Input, Key, Mods, MouseButton, Outcome, Overlay, OverlayInit, OverlayMode};
+pub use overlay::{
+    CursorKind, Input, Key, Mods, MouseButton, Outcome, Overlay, OverlayInit, OverlayMode,
+};

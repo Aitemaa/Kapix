@@ -18,15 +18,28 @@ impl Rgba {
     }
     /// From a BGRA pixel as stored in [`crate::Image`].
     pub const fn from_bgra(p: [u8; 4]) -> Self {
-        Self { r: p[2], g: p[1], b: p[0], a: p[3] }
+        Self {
+            r: p[2],
+            g: p[1],
+            b: p[0],
+            a: p[3],
+        }
     }
     /// `#RRGGBB` uppercase.
     pub fn hex(&self) -> String {
-        todo!()
+        format!("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
     /// Relative luminance 0..1 (sRGB, approximate) — used to pick contrasting text color.
     pub fn luminance(&self) -> f32 {
-        todo!()
+        fn lin(c: u8) -> f32 {
+            let c = c as f32 / 255.0;
+            if c <= 0.03928 {
+                c / 12.92
+            } else {
+                ((c + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * lin(self.r) + 0.7152 * lin(self.g) + 0.0722 * lin(self.b)
     }
 }
 
@@ -41,3 +54,23 @@ pub const PRESETS: [Rgba; 6] = [
 ];
 
 pub const PRESET_NAMES: [&str; 6] = ["Red", "Amber", "Emerald", "Sky", "White", "Ink"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_and_bgra() {
+        assert_eq!(PRESETS[0].hex(), "#EF4444");
+        assert_eq!(Rgba::from_bgra([1, 2, 3, 255]), Rgba::rgb(3, 2, 1));
+        assert_eq!(Rgba::rgb(1, 2, 3).with_alpha(9).a, 9);
+    }
+
+    #[test]
+    fn luminance_ordering() {
+        assert!(Rgba::rgb(0, 0, 0).luminance() < 0.001);
+        assert!((Rgba::rgb(255, 255, 255).luminance() - 1.0).abs() < 0.001);
+        assert!(PRESETS[4].luminance() > PRESETS[5].luminance());
+        assert!(PRESETS[1].luminance() > 0.4);
+    }
+}

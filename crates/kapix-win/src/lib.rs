@@ -36,3 +36,29 @@ impl From<windows::core::Error> for Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// NUL-terminated UTF-16 copy of `s`.
+pub(crate) fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+/// `HWND` from the app's `isize` window handle (`0` = no window).
+pub(crate) fn hwnd(h: isize) -> windows::Win32::Foundation::HWND {
+    windows::Win32::Foundation::HWND(h as *mut core::ffi::c_void)
+}
+
+/// Initialize COM on this thread; an already-initialized apartment (any mode) is fine.
+pub(crate) fn com_init(mta: bool) {
+    use windows::Win32::System::Com::{
+        COINIT_APARTMENTTHREADED, COINIT_MULTITHREADED, CoInitializeEx,
+    };
+    let mode = if mta {
+        COINIT_MULTITHREADED
+    } else {
+        COINIT_APARTMENTTHREADED
+    };
+    // SAFETY: plain COM initialization; S_FALSE / RPC_E_CHANGED_MODE are benign and ignored.
+    unsafe {
+        let _ = CoInitializeEx(None, mode);
+    }
+}
