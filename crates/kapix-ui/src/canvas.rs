@@ -1,7 +1,7 @@
 //! BGRA-order helpers around `tiny_skia::Pixmap`.
 
 use kapix_core::{Image, Rect, Rgba};
-use tiny_skia::{Color, IntSize, Paint, Path, PathBuilder, Pixmap};
+use tiny_skia::{Color, FillRule, IntSize, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
 /// Convert a straight RGBA color into a tiny-skia color **with R and B swapped**, so drawing
 /// into a pixmap whose bytes are interpreted as BGRA produces the intended color.
@@ -41,10 +41,31 @@ pub fn blit(
     blit_with(from, src, to, dx, dy, |d, s| d.copy_from_slice(s));
 }
 
-/// Like [`blit`] but darkens the copied pixels (the "frozen screen dimmer"); alpha is forced
-/// opaque.
-pub(crate) fn blit_dimmed(from: &Pixmap, src: Rect, to: &mut Pixmap, dx: i32, dy: i32) {
-    blit_with(from, src, to, dx, dy, dim_row);
+/// Scrim blend constants: `out = (src * inv + scrim * a) / 256` with `inv + a = 256`, applied
+/// to two channels at a time (SWAR) so dimming the frozen frame stays memory-bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Dim {
+    inv: u32,
+    /// `scrim.r * a` in bits 16.., `scrim.b * a` in bits 0.. (matches BGRA little-endian).
+    k_rb: u32,
+    k_g: u32,
+}
+
+impl Dim {
+    pub fn new(scrim: Rgba) -> Dim {
+        let a = (scrim.a as u32 * 256).div_ceil(255).min(256);
+        Dim {
+            inv: 256 - a,
+            k_rb: ((scrim.r as u32 * a) << 16) | (scrim.b as u32 * a),
+            k_g: scrim.g as u32 * a,
+        }
+    }
+}
+
+/// Like [`blit`] but blends the palette scrim over the copied pixels (the "frozen screen
+/// dimmer"); alpha is forced opaque.
+pub(crate) fn blit_dimmed(from: &Pixmap, src: Rect, to: &mut Pixmap, dx: i32, dy: i32, dim: Dim) {
+    blit_with(from, src, to, dx, dy, |d, s| dim_row(d, s, dim));
 }
 
 fn blit_with(
@@ -74,14 +95,11 @@ fn blit_with(
     }
 }
 
-/// Brightness multiplier of the dimmed frame, out of 256 (~45%).
-const DIM: u32 = 115;
-
-fn dim_row(dst: &mut [u8], src: &[u8]) {
+fn dim_row(dst: &mut [u8], src: &[u8], dim: Dim) {
     for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
         let p = u32::from_le_bytes([s[0], s[1], s[2], s[3]]);
-        let rb = (((p & 0x00FF_00FF) * DIM) >> 8) & 0x00FF_00FF;
-        let g = ((((p >> 8) & 0xFF) * DIM) >> 8) << 8;
+        let rb = (((p & 0x00FF_00FF) * dim.inv + dim.k_rb + 0x0080_0080) >> 8) & 0x00FF_00FF;
+        let g = ((((p >> 8) & 0xFF) * dim.inv + dim.k_g + 0x80) >> 8) << 8;
         d.copy_from_slice(&(rb | g | 0xFF00_0000).to_le_bytes());
     }
 }
@@ -110,17 +128,29 @@ pub(crate) fn fill_rect_px(pm: &mut Pixmap, r: Rect, c: Rgba) {
     let Some(r) = r.intersect(&pm_rect(pm)) else {
         return;
     };
+    if c.a == 0 {
+        return;
+    }
     let stride = pm.width() as usize * 4;
-    let opaque = c.a == 255;
+    let a = c.a as u32;
+    let inv = 255 - a;
+    // Premultiplied source channels (B, G, R, A) for integer source-over.
+    let src = [c.b as u32 * a, c.g as u32 * a, c.r as u32 * a, 255 * a];
+    let div255 = |v: u32| {
+        let v = v + 128;
+        ((v + (v >> 8)) >> 8) as u8
+    };
     let data = pm.data_mut();
     for y in r.y..r.bottom() {
         let off = y as usize * stride;
         let row = &mut data[off + r.x as usize * 4..off + r.right() as usize * 4];
         for px in row.chunks_exact_mut(4) {
-            if opaque {
+            if a == 255 {
                 px.copy_from_slice(&[c.b, c.g, c.r, 255]);
             } else {
-                blend_px(px, c, 1.0);
+                for k in 0..4 {
+                    px[k] = div255(src[k] + px[k] as u32 * inv);
+                }
             }
         }
     }
@@ -137,6 +167,92 @@ pub(crate) fn stroke_rect_px(pm: &mut Pixmap, r: Rect, t: i32, c: Rgba) {
     fill_rect_px(pm, Rect::new(r.x, r.bottom() - t, r.w, t), c);
     fill_rect_px(pm, Rect::new(r.x, r.y + t, t, r.h - 2 * t), c);
     fill_rect_px(pm, Rect::new(r.right() - t, r.y + t, t, r.h - 2 * t), c);
+}
+
+/// Dashed 1 px outline of `r` (drawn inside it): `dash` px on, `gap` px off, walking the
+/// perimeter clockwise from the top-left corner.
+pub(crate) fn dashed_rect_px(pm: &mut Pixmap, r: Rect, dash: i32, gap: i32, c: Rgba) {
+    if r.w < 2 || r.h < 2 || dash < 1 {
+        return;
+    }
+    let period = dash + gap.max(0);
+    let mut put = |x: i32, y: i32, pos: i32| {
+        if pos % period < dash {
+            fill_rect_px(pm, Rect::new(x, y, 1, 1), c);
+        }
+    };
+    let mut pos = 0;
+    for x in r.x..r.right() {
+        put(x, r.y, pos);
+        pos += 1;
+    }
+    for y in r.y + 1..r.bottom() {
+        put(r.right() - 1, y, pos);
+        pos += 1;
+    }
+    for x in (r.x..r.right() - 1).rev() {
+        put(x, r.bottom() - 1, pos);
+        pos += 1;
+    }
+    for y in (r.y + 1..r.bottom() - 1).rev() {
+        put(r.x, y, pos);
+        pos += 1;
+    }
+}
+
+/// Anti-aliased rounded-rect fill.
+pub(crate) fn fill_rrect(pm: &mut Pixmap, r: Rect, radius: f32, c: Rgba) {
+    if let Some(p) = rrect_path(r.x as f32, r.y as f32, r.w as f32, r.h as f32, radius) {
+        pm.fill_path(
+            &p,
+            &paint(c),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// Anti-aliased `width`-px rounded-rect border drawn **inside** `r`.
+pub(crate) fn stroke_rrect(pm: &mut Pixmap, r: Rect, radius: f32, width: f32, c: Rgba) {
+    let i = width / 2.0;
+    if let Some(p) = rrect_path(
+        r.x as f32 + i,
+        r.y as f32 + i,
+        r.w as f32 - width,
+        r.h as f32 - width,
+        (radius - i).max(0.0),
+    ) {
+        let stroke = Stroke {
+            width,
+            ..Stroke::default()
+        };
+        pm.stroke_path(&p, &paint(c), &stroke, Transform::identity(), None);
+    }
+}
+
+/// Anti-aliased filled circle.
+pub(crate) fn fill_circle(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, c: Rgba) {
+    if let Some(p) = PathBuilder::from_circle(cx, cy, r) {
+        pm.fill_path(
+            &p,
+            &paint(c),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+/// Anti-aliased circle outline centred on radius `r`.
+pub(crate) fn stroke_circle(pm: &mut Pixmap, cx: f32, cy: f32, r: f32, width: f32, c: Rgba) {
+    if let Some(p) = PathBuilder::from_circle(cx, cy, r) {
+        let stroke = Stroke {
+            width,
+            ..Stroke::default()
+        };
+        pm.stroke_path(&p, &paint(c), &stroke, Transform::identity(), None);
+    }
 }
 
 /// `a` minus `b` as up to four disjoint rects.
@@ -240,10 +356,42 @@ mod tests {
         let mut src = Pixmap::new(2, 2).unwrap();
         src.fill(Color::from_rgba8(200, 200, 200, 255));
         let mut dst = Pixmap::new(2, 2).unwrap();
-        blit_dimmed(&src, Rect::new(0, 0, 2, 2), &mut dst, 0, 0);
+        // Dark scrim: black @ 60 % -> 200 * 0.4 = 80.
+        blit_dimmed(
+            &src,
+            Rect::new(0, 0, 2, 2),
+            &mut dst,
+            0,
+            0,
+            Dim::new(Rgba::rgb(0, 0, 0).with_alpha(153)),
+        );
         let v = dst.data()[0];
-        assert!((85..=95).contains(&v), "{v}");
+        assert!((78..=83).contains(&v), "{v}");
         assert_eq!(dst.data()[3], 255);
+        // Light scrim: rgb(20) @ 35 % -> 200 * 0.65 + 20 * 0.35 = 137.
+        blit_dimmed(
+            &src,
+            Rect::new(0, 0, 2, 2),
+            &mut dst,
+            0,
+            0,
+            Dim::new(Rgba::rgb(20, 20, 20).with_alpha(89)),
+        );
+        assert!((135..=139).contains(&dst.data()[0]), "{}", dst.data()[0]);
+        // Channels stay independent (BGRA).
+        let mut px = Pixmap::new(1, 1).unwrap();
+        px.data_mut().copy_from_slice(&[255, 100, 0, 255]);
+        let mut out = Pixmap::new(1, 1).unwrap();
+        blit_dimmed(
+            &px,
+            Rect::new(0, 0, 1, 1),
+            &mut out,
+            0,
+            0,
+            Dim::new(Rgba::rgb(0, 0, 0).with_alpha(128)),
+        );
+        assert!((126..=128).contains(&out.data()[0]) && (49..=51).contains(&out.data()[1]));
+        assert_eq!(out.data()[2..], [0, 255]);
     }
 
     #[test]

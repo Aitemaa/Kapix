@@ -45,7 +45,7 @@ pub enum Sink {
 struct Session {
     overlay: Overlay,
     hwnd: HWND,
-    font: Option<Font>,
+    font: Font,
     sink: Sink,
     painted: bool,
 }
@@ -97,7 +97,7 @@ pub fn start(mode: OverlayMode, gdi: bool, sink: Sink, cfg: &Config) -> Result<(
     } else {
         Vec::new()
     };
-    let font = font_job.join().ok().flatten();
+    let font = font_job.join().unwrap_or_else(|_| Font::builtin());
     let cursor = desktop.to_buffer(winutil::cursor_pos());
     let b = desktop.bounds;
     let overlay = Overlay::new(OverlayInit {
@@ -109,6 +109,7 @@ pub fn start(mode: OverlayMode, gdi: bool, sink: Sink, cfg: &Config) -> Result<(
         show_magnifier: cfg.capture.show_magnifier,
         window_snap: cfg.capture.window_snap,
         font: font.clone(),
+        palette: winutil::palette(cfg.ui.theme),
         cursor: (cursor.x, cursor.y),
     });
     BOUNDS.with(|c| c.set(b));
@@ -173,7 +174,7 @@ fn finish(out: Outcome) {
             unsafe { PostQuitMessage(0) };
         }
         Sink::Daemon => {
-            actions::handle(out, font);
+            actions::handle(out, Some(font));
             winutil::trim_working_set();
         }
     }

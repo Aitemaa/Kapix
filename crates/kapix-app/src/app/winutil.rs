@@ -148,9 +148,21 @@ pub fn trace(label: &str) {
     unsafe { OutputDebugStringW(PCWSTR(s.as_ptr())) }
 }
 
-/// Load the UI font (Segoe UI from `%WINDIR%\Fonts`); `None` renders text-less UI.
-pub fn load_font() -> Option<kapix_ui::Font> {
-    kapix_ui::Font::from_bytes(kapix_win::paths::system_font("segoeui.ttf")?)
+/// The UI font: embedded Archivo, with Segoe UI (`%WINDIR%\Fonts`) as the fallback face for
+/// characters Archivo lacks (non-Latin text in annotations and toasts). Missing Segoe UI only
+/// loses that fallback.
+pub fn load_font() -> kapix_ui::Font {
+    kapix_ui::Font::new(kapix_win::paths::system_font("segoeui.ttf"))
+}
+
+/// Resolve the configured theme: `system` follows the Windows "app mode" setting.
+pub fn palette(mode: kapix_core::config::ThemeMode) -> kapix_ui::Palette {
+    kapix_ui::Palette::resolve(mode, kapix_win::theme::apps_use_light_theme)
+}
+
+/// `0x00BBGGRR` for GDI from an opaque color.
+pub fn colorref(c: kapix_core::Rgba) -> u32 {
+    (c.b as u32) << 16 | (c.g as u32) << 8 | c.r as u32
 }
 
 /// Run `f` on the UI thread's HWND-less helper: post a boxed message to `hwnd` (stored as

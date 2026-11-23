@@ -4,14 +4,15 @@
 use kapix_core::{Point, Rect, Rgba, Tool};
 use tiny_skia::{FillRule, PathBuilder, Pixmap, Stroke, Transform};
 
-use crate::canvas::{fill_rect_px, paint, pm_rect, rrect_path, stroke_rect_px};
+use crate::canvas::{
+    fill_circle, fill_rect_px, fill_rrect, paint, pm_rect, rrect_path, stroke_rect_px, stroke_rrect,
+};
 use crate::font::Font;
-use crate::toolbar::{ACCENT, shadow};
+use crate::shadow;
+use crate::theme::{Palette, RADIUS_FIELD, RADIUS_PAD};
 
-const WHITE: Rgba = Rgba::rgb(255, 255, 255);
-const CARD: Rgba = Rgba::rgb(0x11, 0x18, 0x27);
-const TEXT: Rgba = Rgba::rgb(0xF3, 0xF4, 0xF6);
-const MUTED: Rgba = Rgba::rgb(0x9C, 0xA3, 0xAF);
+/// Off-white used by the cursor ring (readable on any scrim, independent of theme).
+const RING_LIGHT: Rgba = Rgba::rgb(0xF2, 0xF1, 0xEE);
 
 pub(crate) fn px(v: f32, s: f32) -> i32 {
     (v * s).round() as i32
@@ -94,49 +95,53 @@ pub(crate) fn border_pad(s: f32) -> i32 {
     px(7.0, s) + 2
 }
 
-pub(crate) fn draw_border(pm: &mut Pixmap, r: Rect, handles: bool, s: f32) {
-    let t = px(1.0, s).max(1);
-    stroke_rect_px(pm, r.inflate(t), t, ACCENT);
+/// Border width (logical px) of the selection frame.
+const BORDER_W: f32 = 1.5;
+/// Handle radius (logical px).
+const HANDLE_R: f32 = 4.5;
+
+/// Contrast line outside the focus ring so the frame reads on any screenshot content.
+fn contrast_line(p: &Palette) -> Rgba {
+    if p.is_dark {
+        Rgba::rgb(0, 0, 0).with_alpha(120)
+    } else {
+        Rgba::rgb(255, 255, 255).with_alpha(160)
+    }
+}
+
+pub(crate) fn draw_border(pm: &mut Pixmap, r: Rect, handles: bool, s: f32, p: &Palette) {
+    // 1.5 px focus ring just outside the selection (whole pixels + one fractional-alpha pixel)
+    // followed by a 1 px contrast line.
+    let w = BORDER_W * s;
+    let whole = (w.floor() as i32).max(1);
+    let frac = w - whole as f32;
+    stroke_rect_px(pm, r.inflate(whole), whole, p.focus);
+    let mut outer = whole;
+    if frac > 0.05 {
+        outer += 1;
+        stroke_rect_px(
+            pm,
+            r.inflate(outer),
+            1,
+            p.focus.with_alpha((p.focus.a as f32 * frac) as u8),
+        );
+    }
+    let c = px(1.0, s).max(1);
+    stroke_rect_px(pm, r.inflate(outer + c), c, contrast_line(p));
     if !handles {
         return;
     }
-    let hs = 4.5 * s;
+    let hr = HANDLE_R * s;
     // Hide the midpoint handles when the selection is too small for them to be useful.
     let small = r.w < px(44.0, s) || r.h < px(44.0, s);
-    for (h, p) in handle_points(r) {
+    for (h, pt) in handle_points(r) {
         if small && matches!(h, Handle::N | Handle::E | Handle::S | Handle::W) {
             continue;
         }
-        let (cx, cy) = (p.x as f32, p.y as f32);
-        if let Some(path) = rrect_path(
-            cx - hs - 1.0,
-            cy - hs - 1.0,
-            2.0 * hs + 2.0,
-            2.0 * hs + 2.0,
-            3.0 * s,
-        ) {
-            pm.fill_path(
-                &path,
-                &paint(Rgba::rgb(0, 0, 0).with_alpha(70)),
-                FillRule::Winding,
-                Transform::identity(),
-                None,
-            );
-        }
-        if let Some(path) = rrect_path(cx - hs, cy - hs, 2.0 * hs, 2.0 * hs, 2.5 * s) {
-            pm.fill_path(
-                &path,
-                &paint(WHITE),
-                FillRule::Winding,
-                Transform::identity(),
-                None,
-            );
-            let stroke = Stroke {
-                width: 1.0,
-                ..Stroke::default()
-            };
-            pm.stroke_path(&path, &paint(ACCENT), &stroke, Transform::identity(), None);
-        }
+        let (cx, cy) = (pt.x as f32, pt.y as f32);
+        // Slider-thumb look: lit dot with a 1 px `bg` ring.
+        fill_circle(pm, cx, cy, hr + s.max(1.0), p.bg);
+        fill_circle(pm, cx, cy, hr, p.lit);
     }
 }
 
@@ -144,13 +149,20 @@ pub(crate) fn draw_border(pm: &mut Pixmap, r: Rect, handles: bool, s: f32) {
 // Snap highlight
 // ---------------------------------------------------------------------------------------------
 
-pub(crate) fn draw_snap(pm: &mut Pixmap, r: Rect, s: f32) {
+/// Border of the hovered window; the faint `lit` fill is part of the base restore
+/// (see [`snap_tint`]) so it never accumulates.
+pub(crate) fn draw_snap(pm: &mut Pixmap, r: Rect, s: f32, p: &Palette) {
     let t = px(2.0, s).max(2);
-    stroke_rect_px(pm, r, t, ACCENT);
-    // Subtle inner white hairline for contrast against accent-colored content.
+    stroke_rect_px(pm, r, t, p.focus);
+    // Hairline contrast line just inside the ring so it reads on any window content.
     if r.w > 2 * t + 4 && r.h > 2 * t + 4 {
-        stroke_rect_px(pm, r.inflate(-t), 1, WHITE.with_alpha(70));
+        stroke_rect_px(pm, r.inflate(-t), 1, contrast_line(p));
     }
+}
+
+/// ~8 % `lit` wash over the hovered window.
+pub(crate) fn snap_tint(p: &Palette) -> Rgba {
+    p.lit.with_alpha(20)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -158,35 +170,24 @@ pub(crate) fn draw_snap(pm: &mut Pixmap, r: Rect, s: f32) {
 // ---------------------------------------------------------------------------------------------
 
 pub(crate) fn label_size(font: &Font, text: &str, s: f32) -> (i32, i32) {
-    let w = font.measure_bold(text, 12.0 * s) + 16.0 * s;
-    (w.ceil() as i32, px(22.0, s))
+    let w = font.medium().measure(text, 12.0 * s).0 + 20.0 * s;
+    (w.ceil() as i32, px(24.0, s))
 }
 
-pub(crate) fn draw_label(pm: &mut Pixmap, font: &Font, r: Rect, text: &str, s: f32) {
-    if let Some(path) = rrect_path(
-        r.x as f32,
-        r.y as f32,
-        r.w as f32,
-        r.h as f32,
-        r.h as f32 / 2.0,
-    ) {
-        pm.fill_path(
-            &path,
-            &paint(CARD.with_alpha(224)),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    }
-    let px_ = 12.0 * s;
-    let (tw, th) = (font.measure_bold(text, px_), font.measure("", px_).1);
-    font.draw_bold(
+pub(crate) fn draw_label(pm: &mut Pixmap, font: &Font, r: Rect, text: &str, s: f32, p: &Palette) {
+    let radius = RADIUS_FIELD * s;
+    fill_rrect(pm, r, radius, p.panel);
+    stroke_rrect(pm, r, radius, 1.0, p.line);
+    let f = font.medium();
+    let tpx = 12.0 * s;
+    let (tw, th) = (f.measure(text, tpx).0, f.measure("", tpx).1);
+    f.draw(
         pm,
         text,
         r.x as f32 + (r.w as f32 - tw) / 2.0,
         r.y as f32 + (r.h as f32 - th) / 2.0,
-        px_,
-        TEXT,
+        tpx,
+        p.text,
     );
 }
 
@@ -225,7 +226,7 @@ pub(crate) fn draw_ring(pm: &mut Pixmap, c: Point, tool: Tool, size: f32) {
     );
     pm.stroke_path(
         &path,
-        &paint(WHITE.with_alpha(235)),
+        &paint(RING_LIGHT.with_alpha(235)),
         &Stroke {
             width: 1.0,
             ..Stroke::default()
@@ -240,6 +241,9 @@ pub(crate) fn draw_ring(pm: &mut Pixmap, c: Point, tool: Tool, size: f32) {
 // ---------------------------------------------------------------------------------------------
 
 pub(crate) const LOUPE_CELLS: i32 = 15;
+const CELL: f32 = 8.0;
+const LOUPE_PAD: f32 = 8.0;
+const ROW_H: f32 = 18.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LoupeData {
@@ -250,64 +254,84 @@ pub(crate) struct LoupeData {
     pub color: Rgba,
     pub dims: Option<(i32, i32)>,
     pub s: f32,
-    pub text: bool,
 }
 
-pub(crate) fn loupe_card_size(s: f32, dims: bool, text: bool) -> (i32, i32) {
-    let cell = px(8.0, s);
-    let pad = px(6.0, s);
+pub(crate) fn loupe_card_size(s: f32, dims: bool) -> (i32, i32) {
+    let cell = px(CELL, s);
+    let pad = px(LOUPE_PAD, s);
     let img = cell * LOUPE_CELLS;
-    let rows = if text { if dims { 3 } else { 2 } } else { 0 };
-    let row_h = px(17.0, s);
-    let extra = if rows > 0 {
-        px(5.0, s) + rows * row_h + px(1.0, s)
-    } else {
-        0
-    };
-    (img + 2 * pad, pad + img + extra + pad)
+    let rows = if dims { 3 } else { 2 };
+    (
+        img + 2 * pad,
+        pad + img + px(6.0, s) + rows * px(ROW_H, s) + pad - px(2.0, s),
+    )
 }
 
-pub(crate) fn draw_loupe(pm: &mut Pixmap, frame: &Pixmap, d: &LoupeData, font: Option<&Font>) {
-    let s = d.s;
-    let card = d.card;
-    let radius = px(10.0, s) as f32;
-    shadow(pm, card, radius, s);
-    if let Some(path) = rrect_path(
-        card.x as f32,
-        card.y as f32,
-        card.w as f32,
-        card.h as f32,
-        radius,
-    ) {
-        pm.fill_path(
-            &path,
-            &paint(CARD.with_alpha(240)),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-        let stroke = Stroke {
-            width: 1.0,
-            ..Stroke::default()
-        };
-        if let Some(b) = rrect_path(
-            card.x as f32 + 0.5,
-            card.y as f32 + 0.5,
-            card.w as f32 - 1.0,
-            card.h as f32 - 1.0,
-            radius - 0.5,
-        ) {
-            pm.stroke_path(
-                &b,
-                &paint(WHITE.with_alpha(34)),
-                &stroke,
+/// Fill the part of `r`'s corner square that lies outside the corner arc with `bg`
+/// (rounds a pasted rectangular image).
+fn round_corners(pm: &mut Pixmap, r: Rect, radius: f32, bg: Rgba) {
+    let k = radius * 0.552_284_75;
+    let (x0, y0, x1, y1) = (r.x as f32, r.y as f32, r.right() as f32, r.bottom() as f32);
+    let corners = [
+        // (corner point, along-x end, along-y end, control points)
+        (
+            (x0, y0),
+            (x0 + radius, y0),
+            (x0, y0 + radius),
+            (x0 + radius - k, y0),
+            (x0, y0 + radius - k),
+        ),
+        (
+            (x1, y0),
+            (x1 - radius, y0),
+            (x1, y0 + radius),
+            (x1 - radius + k, y0),
+            (x1, y0 + radius - k),
+        ),
+        (
+            (x1, y1),
+            (x1 - radius, y1),
+            (x1, y1 - radius),
+            (x1 - radius + k, y1),
+            (x1, y1 - radius + k),
+        ),
+        (
+            (x0, y1),
+            (x0 + radius, y1),
+            (x0, y1 - radius),
+            (x0 + radius - k, y1),
+            (x0, y1 - radius + k),
+        ),
+    ];
+    for (c, a, b, ca, cb) in corners {
+        let mut pb = PathBuilder::new();
+        pb.move_to(c.0, c.1);
+        pb.line_to(a.0, a.1);
+        pb.cubic_to(ca.0, ca.1, cb.0, cb.1, b.0, b.1);
+        pb.close();
+        if let Some(path) = pb.finish() {
+            // Slightly grown so no un-blended image pixel survives the AA edge.
+            pm.fill_path(
+                &path,
+                &paint(bg),
+                FillRule::Winding,
                 Transform::identity(),
                 None,
             );
         }
     }
-    let cell = px(8.0, s);
-    let pad = px(6.0, s);
+}
+
+pub(crate) fn draw_loupe(pm: &mut Pixmap, frame: &Pixmap, d: &LoupeData, font: &Font, p: &Palette) {
+    let s = d.s;
+    let card = d.card;
+    let radius = RADIUS_PAD * s;
+    shadow::draw(pm, card, radius, s, p.shadow);
+    fill_rrect(pm, card, radius, p.panel);
+    stroke_rrect(pm, card, radius, 1.0, p.line);
+
+    let cell = px(CELL, s);
+    let pad = px(LOUPE_PAD, s);
     let img = cell * LOUPE_CELLS;
     let (ix, iy) = (card.x + pad, card.y + pad);
     let half = LOUPE_CELLS / 2;
@@ -319,6 +343,8 @@ pub(crate) fn draw_loupe(pm: &mut Pixmap, frame: &Pixmap, d: &LoupeData, font: O
         let pdata = pm.data_mut();
         let width = (cell * LOUPE_CELLS) as usize;
         let mut row = vec![0u8; width * 4];
+        let off_a = [p.surface.b, p.surface.g, p.surface.r, 255];
+        let off_b = [p.surface_2.b, p.surface_2.g, p.surface_2.r, 255];
         for cy in 0..LOUPE_CELLS {
             // Build one magnified pixel row, then replicate it `cell` times.
             for cx in 0..LOUPE_CELLS {
@@ -327,9 +353,9 @@ pub(crate) fn draw_loupe(pm: &mut Pixmap, frame: &Pixmap, d: &LoupeData, font: O
                     let i = (sp.y as usize * fw + sp.x as usize) * 4;
                     [fdata[i], fdata[i + 1], fdata[i + 2], 255]
                 } else if (cx + cy) % 2 == 0 {
-                    [0x1E, 0x15, 0x0F, 255]
+                    off_a
                 } else {
-                    [0x2A, 0x20, 0x17, 255]
+                    off_b
                 };
                 for k in 0..cell as usize {
                     let o = (cx as usize * cell as usize + k) * 4;
@@ -353,85 +379,87 @@ pub(crate) fn draw_loupe(pm: &mut Pixmap, frame: &Pixmap, d: &LoupeData, font: O
             }
         }
     }
-    // Pixel grid.
+    let img_rect = Rect::new(ix, iy, img, img);
+    // Pixel grid: `line` at low alpha.
     if cell >= 5 {
-        let grid = Rgba::rgb(0, 0, 0).with_alpha(46);
+        let grid = p.line.with_alpha(if p.is_dark { 60 } else { 90 });
         for i in 1..LOUPE_CELLS {
             fill_rect_px(pm, Rect::new(ix + i * cell, iy, 1, img), grid);
             fill_rect_px(pm, Rect::new(ix, iy + i * cell, img, 1), grid);
         }
     }
-    // Frame around the magnified area + center pixel marker.
-    stroke_rect_px(
-        pm,
-        Rect::new(ix - 1, iy - 1, img + 2, img + 2),
-        1,
-        WHITE.with_alpha(40),
-    );
+    // Red crosshair through the centre pixel (echoes the logo): four round-capped arms with the
+    // centre pixel itself left visible.
     let c = Rect::new(ix + half * cell, iy + half * cell, cell, cell);
-    stroke_rect_px(pm, c.inflate(1), 1, Rgba::rgb(0, 0, 0).with_alpha(235));
-    stroke_rect_px(pm, c, 1, WHITE.with_alpha(245));
+    let (ccx, ccy) = (c.x as f32 + c.w as f32 / 2.0, c.y as f32 + c.h as f32 / 2.0);
+    let (inner, outer) = (c.w as f32 / 2.0 + 2.0 * s, c.w as f32 * 2.5);
+    let lw = (1.6 * s).max(1.5);
+    for (dx, dy) in [(1.0f32, 0.0f32), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        let mut pb = PathBuilder::new();
+        pb.move_to(ccx + dx * inner, ccy + dy * inner);
+        pb.line_to(ccx + dx * outer, ccy + dy * outer);
+        if let Some(path) = pb.finish() {
+            let stroke = |w: f32| Stroke {
+                width: w,
+                line_cap: tiny_skia::LineCap::Round,
+                ..Stroke::default()
+            };
+            pm.stroke_path(
+                &path,
+                &paint(Rgba::rgb(0, 0, 0).with_alpha(90)),
+                &stroke(lw + 2.0),
+                Transform::identity(),
+                None,
+            );
+            pm.stroke_path(
+                &path,
+                &paint(p.red),
+                &stroke(lw),
+                Transform::identity(),
+                None,
+            );
+        }
+    }
+    stroke_rect_px(pm, c.inflate(1), 1, Rgba::rgb(0, 0, 0).with_alpha(150));
+    stroke_rect_px(pm, c, 1, p.red);
+    // Round the magnified area to sit concentric inside the card.
+    let ir = (RADIUS_PAD - LOUPE_PAD).max(4.0) * s;
+    round_corners(pm, img_rect, ir, p.panel);
+    stroke_rrect(pm, img_rect, ir, 1.0, p.line_strong.with_alpha(120));
 
-    let Some(font) = font.filter(|_| d.text) else {
-        return;
-    };
-    let row_h = px(17.0, s);
-    let tpx = 11.5 * s;
-    let th = font.measure("", tpx).1;
-    let mut y = iy + img + px(5.0, s);
+    let reg = font.regular();
+    let med = font.medium();
+    let row_h = px(ROW_H, s);
+    let (cpx, hpx) = (12.0 * s, 13.0 * s);
+    let mut y = iy + img + px(6.0, s);
     let tx = ix as f32 + 2.0 * s;
-    let row = |pm: &mut Pixmap, y: i32, f: &dyn Fn(&mut Pixmap, f32, f32)| {
-        f(pm, tx, y as f32 + (row_h as f32 - th) / 2.0);
-    };
+    let center_y = |y: i32, th: f32| y as f32 + (row_h as f32 - th) / 2.0;
     if let Some((w, h)) = d.dims {
-        let t = format!("{w} × {h}");
-        row(pm, y, &|pm, x, yy| {
-            font.draw_bold(pm, &t, x, yy, tpx, Rgba::rgb(0x93, 0xC5, 0xFD))
-        });
+        let th = med.measure("", cpx).1;
+        med.draw(pm, &format!("{w} × {h}"), tx, center_y(y, th), cpx, p.text);
         y += row_h;
     }
+    let th = reg.measure("", cpx).1;
     let coords = format!("{}, {}", d.virtual_pos.x, d.virtual_pos.y);
-    row(pm, y, &|pm, x, yy| {
-        font.draw(pm, &coords, x, yy, tpx, MUTED)
-    });
+    reg.draw(pm, &coords, tx, center_y(y, th), cpx, p.muted);
     y += row_h;
-    // Color chip + hex.
-    let chip = px(10.0, s);
+    // Colour swatch + hex.
+    let chip = px(12.0, s);
     let chip_r = Rect::new(ix + px(2.0, s), y + (row_h - chip) / 2, chip, chip);
-    if let Some(path) = rrect_path(
-        chip_r.x as f32,
-        chip_r.y as f32,
-        chip_r.w as f32,
-        chip_r.h as f32,
-        2.5 * s,
-    ) {
-        pm.fill_path(
-            &path,
-            &paint(d.color),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-        let stroke = Stroke {
-            width: 1.0,
-            ..Stroke::default()
-        };
-        pm.stroke_path(
-            &path,
-            &paint(WHITE.with_alpha(110)),
-            &stroke,
-            Transform::identity(),
-            None,
-        );
-    }
-    let hex = d.color.hex();
-    let hx = (chip_r.right() + px(6.0, s)) as f32;
-    font.draw(
+    fill_rrect(pm, chip_r, 4.0 * s, d.color);
+    stroke_rrect(pm, chip_r, 4.0 * s, 1.0, p.line_strong);
+    let th = med.measure("", hpx).1;
+    med.draw(
         pm,
-        &hex,
-        hx,
-        y as f32 + (row_h as f32 - th) / 2.0,
-        tpx,
-        TEXT,
+        &d.color.hex(),
+        (chip_r.right() + px(8.0, s)) as f32,
+        center_y(y, th),
+        hpx,
+        p.text,
     );
+}
+
+/// Shadow-inclusive bounds of the loupe card (dirty rect).
+pub(crate) fn loupe_bounds(card: Rect, s: f32) -> Rect {
+    shadow::bounds(card, s)
 }

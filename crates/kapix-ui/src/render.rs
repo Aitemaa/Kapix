@@ -8,21 +8,22 @@ use tiny_skia::{
 use crate::canvas::{self, paint, rrect_path};
 use crate::font::Font;
 
-/// Ink color used for text/numbers on light fills and for dark backing pills.
-pub(crate) const INK: Rgba = Rgba::rgb(0x11, 0x18, 0x27);
-const WHITE: Rgba = Rgba::rgb(0xFF, 0xFF, 0xFF);
+/// Ink color used for text/numbers on light fills and for dark backing pills (Kavox `bg` ink).
+pub(crate) const INK: Rgba = Rgba::rgb(0x14, 0x14, 0x14);
+/// Warm off-white used on dark fills and for light backing pills (Kavox `lit`).
+const PAPER: Rgba = Rgba::rgb(0xF2, 0xF1, 0xEE);
 /// Alpha of the highlighter color (~40%).
 const HIGHLIGHT_ALPHA: u8 = 102;
 
 /// Draw `items` in order into `pixmap`, where pixmap pixel (0,0) corresponds to buffer
 /// coordinate `origin` (i.e. every annotation is translated by `-origin`).
 /// `Pixelate` destructively mosaics the pixmap's *current* pixels in its rect (so it also
-/// obscures anything drawn before it). Text is skipped when `font` is `None`.
+/// obscures anything drawn before it).
 pub fn render_annotations(
     pixmap: &mut tiny_skia::Pixmap,
     items: &[Annotation],
     origin: (i32, i32),
-    font: Option<&Font>,
+    font: &Font,
 ) {
     let ts = Transform::from_translate(-origin.0 as f32, -origin.1 as f32);
     for item in items {
@@ -67,9 +68,7 @@ pub fn render_annotations(
                 size,
                 backing,
             } => {
-                if let Some(font) = font {
-                    draw_text(pixmap, font, *pos, text, *color, *size, *backing, origin);
-                }
+                draw_text(pixmap, font, *pos, text, *color, *size, *backing, origin);
             }
             Annotation::Pixelate { rect, block } => {
                 let r = rect.translate(-origin.0, -origin.1);
@@ -90,7 +89,7 @@ pub fn render_annotations(
 
 /// Export path: crop `selection` out of the raw frame and render `items` onto it.
 /// Returns an opaque BGRA image of `selection ∩ frame.bounds()`.
-pub fn flatten(frame: &Image, selection: Rect, items: &[Annotation], font: Option<&Font>) -> Image {
+pub fn flatten(frame: &Image, selection: Rect, items: &[Annotation], font: &Font) -> Image {
     match PixmapRef::from_bytes(&frame.data, frame.width, frame.height) {
         Some(pm) => flatten_ref(pm, selection, items, font),
         None => Image {
@@ -105,7 +104,7 @@ pub(crate) fn flatten_ref(
     frame: PixmapRef,
     selection: Rect,
     items: &[Annotation],
-    font: Option<&Font>,
+    font: &Font,
 ) -> Image {
     let bounds = Rect::new(0, 0, frame.width() as i32, frame.height() as i32);
     let Some(sel) = selection.intersect(&bounds) else {
@@ -187,7 +186,7 @@ fn pill_pad(size: f32) -> (f32, f32) {
 }
 
 /// Rendering-accurate bounds of an annotation (buffer coordinates, integer, conservative).
-pub fn annotation_bounds(a: &Annotation, font: Option<&Font>) -> Rect {
+pub fn annotation_bounds(a: &Annotation, font: &Font) -> Rect {
     fn pts(points: &[PointF], pad: f32) -> Rect {
         let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for p in points {
@@ -218,15 +217,7 @@ pub fn annotation_bounds(a: &Annotation, font: Option<&Font>) -> Rect {
         Annotation::Text {
             pos, text, size, ..
         } => {
-            let (w, h) = match font {
-                Some(f) => f.measure_multiline(text, *size),
-                None => {
-                    let lines = text.split('\n');
-                    let n = lines.clone().count();
-                    let longest = lines.map(|l| l.chars().count()).max().unwrap_or(0);
-                    (longest as f32 * size * 0.62, n as f32 * size * 1.3)
-                }
-            };
+            let (w, h) = font.medium().measure_multiline(text, *size);
             let (px, py) = pill_pad(*size);
             pts(&[*pos, PointF::new(pos.x + w, pos.y + h)], px.max(py) + 4.0)
         }
@@ -389,7 +380,7 @@ pub(crate) fn pill_color(c: Rgba) -> Rgba {
     if c.luminance() > 0.45 {
         INK.with_alpha(230)
     } else {
-        WHITE.with_alpha(235)
+        PAPER.with_alpha(235)
     }
 }
 
@@ -404,6 +395,7 @@ fn draw_text(
     backing: bool,
     origin: (i32, i32),
 ) {
+    let font = &font.medium();
     let (x, y) = (pos.x - origin.0 as f32, pos.y - origin.1 as f32);
     let (w, h) = font.measure_multiline(text, size);
     if backing && !text.is_empty() {
@@ -425,7 +417,7 @@ fn draw_text(
 #[allow(clippy::too_many_arguments)]
 fn draw_step(
     pm: &mut Pixmap,
-    font: Option<&Font>,
+    font: &Font,
     center: PointF,
     number: u32,
     color: Rgba,
@@ -433,7 +425,7 @@ fn draw_step(
     ts: Transform,
     origin: (i32, i32),
 ) {
-    let contrast = if color.luminance() > 0.4 { INK } else { WHITE };
+    let contrast = if color.luminance() > 0.4 { INK } else { PAPER };
     // Contrasting outer ring first (so the fill edge stays crisp), then the badge.
     if let Some(ring) = PathBuilder::from_circle(center.x, center.y, radius + 0.9) {
         pm.stroke_path(
@@ -445,31 +437,21 @@ fn draw_step(
         );
     }
     dot(pm, center, radius, color, ts);
-    if let Some(font) = font {
-        let s = number.to_string();
-        let px = radius
-            * match s.len() {
-                1 => 1.12,
-                2 => 0.95,
-                _ => 0.78,
-            };
-        font.draw_centered(
-            pm,
-            &s,
-            center.x - origin.0 as f32,
-            center.y - origin.1 as f32,
-            px,
-            contrast,
-        );
-        font.draw_centered(
-            pm,
-            &s,
-            center.x - origin.0 as f32 + 0.35,
-            center.y - origin.1 as f32,
-            px,
-            contrast,
-        );
-    }
+    let s = number.to_string();
+    let px = radius
+        * match s.len() {
+            1 => 1.12,
+            2 => 0.95,
+            _ => 0.78,
+        };
+    font.heading().draw_centered(
+        pm,
+        &s,
+        center.x - origin.0 as f32,
+        center.y - origin.1 as f32,
+        px,
+        contrast,
+    );
 }
 
 #[cfg(test)]
@@ -497,9 +479,9 @@ mod tests {
             width: 4.0,
             filled: false,
         };
-        render_annotations(&mut pm, &[r], (0, 0), None);
-        // Middle of the left edge is solid red: BGRA = (0x44, 0x44, 0xEF, 255).
-        assert_eq!(px(&pm, 11, 20), [0x44, 0x44, 0xEF, 255]);
+        render_annotations(&mut pm, &[r], (0, 0), &test_font::load());
+        // Middle of the left edge is solid red: BGRA = (0x2D, 0x26, 0xE8, 255).
+        assert_eq!(px(&pm, 11, 20), [0x2D, 0x26, 0xE8, 255]);
         // Interior and exterior stay white.
         assert_eq!(px(&pm, 20, 20), [255, 255, 255, 255]);
         assert_eq!(px(&pm, 5, 20), [255, 255, 255, 255]);
@@ -511,8 +493,8 @@ mod tests {
             width: 4.0,
             filled: false,
         };
-        render_annotations(&mut pm, &[r], (100, 0), None);
-        assert_eq!(px(&pm, 11, 20), [0x44, 0x44, 0xEF, 255]);
+        render_annotations(&mut pm, &[r], (100, 0), &test_font::load());
+        assert_eq!(px(&pm, 11, 20), [0x2D, 0x26, 0xE8, 255]);
     }
 
     #[test]
@@ -524,7 +506,7 @@ mod tests {
             width: 3.0,
             filled: true,
         };
-        render_annotations(&mut pm, &[r], (0, 0), None);
+        render_annotations(&mut pm, &[r], (0, 0), &test_font::load());
         assert_eq!(px(&pm, 15, 15), [0xE9, 0xA5, 0x0E, 255]);
     }
 
@@ -537,9 +519,9 @@ mod tests {
             color: PRESETS[0],
             width: 4.0,
         };
-        render_annotations(&mut pm, &[a], (0, 0), None);
-        assert_eq!(px(&pm, 40, 20), [0x44, 0x44, 0xEF, 255], "shaft");
-        assert_eq!(px(&pm, 86, 20), [0x44, 0x44, 0xEF, 255], "head body");
+        render_annotations(&mut pm, &[a], (0, 0), &test_font::load());
+        assert_eq!(px(&pm, 40, 20), [0x2D, 0x26, 0xE8, 255], "shaft");
+        assert_eq!(px(&pm, 86, 20), [0x2D, 0x26, 0xE8, 255], "head body");
         // The head is wider than the shaft near its base, absent behind the start.
         assert_ne!(px(&pm, 78, 14), [255, 255, 255, 255], "head flare");
         assert_eq!(
@@ -563,7 +545,7 @@ mod tests {
             color: PRESETS[2],
             width: 4.0,
         };
-        render_annotations(&mut pm, &[pen], (0, 0), None);
+        render_annotations(&mut pm, &[pen], (0, 0), &test_font::load());
         assert_eq!(px(&pm, 30, 15), [0x81, 0xB9, 0x10, 255]);
         let mut pm = canvas::image_to_pixmap(solid(60, 30, [200, 200, 200, 255]));
         let hl = Annotation::Highlighter {
@@ -571,7 +553,7 @@ mod tests {
             color: PRESETS[1],
             width: 12.0,
         };
-        render_annotations(&mut pm, &[hl], (0, 0), None);
+        render_annotations(&mut pm, &[hl], (0, 0), &test_font::load());
         let p = px(&pm, 30, 15);
         // Multiply with a 40% amber over gray darkens blue the most, keeps red high.
         assert!(p[0] < p[2] && p[2] > 150 && p[3] == 255, "{p:?}");
@@ -586,8 +568,8 @@ mod tests {
             color: PRESETS[0],
             width: 6.0,
         };
-        render_annotations(&mut pm, &[pen], (0, 0), None);
-        assert_eq!(px(&pm, 10, 10), [0x44, 0x44, 0xEF, 255]);
+        render_annotations(&mut pm, &[pen], (0, 0), &test_font::load());
+        assert_eq!(px(&pm, 10, 10), [0x2D, 0x26, 0xE8, 255]);
     }
 
     #[test]
@@ -602,7 +584,7 @@ mod tests {
             rect: Rect::new(4, 4, 16, 16),
             block: 8,
         }];
-        let out = flatten(&img, Rect::new(0, 0, 32, 32), &items, None);
+        let out = flatten(&img, Rect::new(0, 0, 32, 32), &items, &test_font::load());
         let first = &out.data[(4 * 32 + 4) * 4..(4 * 32 + 4) * 4 + 4];
         for y in 4..12usize {
             for x in 4..12usize {
@@ -653,9 +635,9 @@ mod tests {
             },
         ];
         let sel = Rect::new(18, 8, 50, 40);
-        let flat = flatten(&img, sel, &items, font.as_ref());
+        let flat = flatten(&img, sel, &items, &font);
         let mut full = canvas::image_to_pixmap(img.clone());
-        render_annotations(&mut full, &items, (0, 0), font.as_ref());
+        render_annotations(&mut full, &items, (0, 0), &font);
         let expect = canvas::pixmap_to_image(full).crop(sel);
         assert_eq!((flat.width, flat.height), (50, 40));
         let diffs: Vec<_> = (0..flat.data.len() / 4)
@@ -672,14 +654,14 @@ mod tests {
     #[test]
     fn flatten_clips_to_frame_and_handles_empty() {
         let img = solid(10, 10, [1, 2, 3, 255]);
-        let f = flatten(&img, Rect::new(5, 5, 100, 100), &[], None);
+        let f = flatten(&img, Rect::new(5, 5, 100, 100), &[], &test_font::load());
         assert_eq!((f.width, f.height), (5, 5));
-        let f = flatten(&img, Rect::new(50, 50, 4, 4), &[], None);
+        let f = flatten(&img, Rect::new(50, 50, 4, 4), &[], &test_font::load());
         assert_eq!((f.width, f.height), (0, 0));
     }
 
     #[test]
-    fn text_is_skipped_without_font_and_drawn_with_one() {
+    fn text_is_drawn_with_the_embedded_font() {
         let items = [Annotation::Text {
             pos: PointF::new(2.0, 2.0),
             text: "Hi".into(),
@@ -688,12 +670,9 @@ mod tests {
             backing: false,
         }];
         let mut pm = canvas::image_to_pixmap(solid(60, 40, [255, 255, 255, 255]));
-        render_annotations(&mut pm, &items, (0, 0), None);
         assert!(pm.data().chunks_exact(4).all(|p| p == [255, 255, 255, 255]));
-        if let Some(f) = test_font::load() {
-            render_annotations(&mut pm, &items, (0, 0), Some(&f));
-            assert!(pm.data().chunks_exact(4).any(|p| p != [255, 255, 255, 255]));
-        }
+        render_annotations(&mut pm, &items, (0, 0), &test_font::load());
+        assert!(pm.data().chunks_exact(4).any(|p| p != [255, 255, 255, 255]));
     }
 
     #[test]
@@ -733,9 +712,14 @@ mod tests {
             },
         ];
         for it in items {
-            let b = annotation_bounds(&it, None);
+            let b = annotation_bounds(&it, &test_font::load());
             let mut pm = canvas::image_to_pixmap(solid(100, 80, [255, 255, 255, 255]));
-            render_annotations(&mut pm, std::slice::from_ref(&it), (0, 0), None);
+            render_annotations(
+                &mut pm,
+                std::slice::from_ref(&it),
+                (0, 0),
+                &test_font::load(),
+            );
             for y in 0..80 {
                 for x in 0..100 {
                     if px(&pm, x, y) != [255, 255, 255, 255] {

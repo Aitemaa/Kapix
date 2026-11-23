@@ -1,10 +1,13 @@
 //! Toast notification content (the host shows it in a layered, non-activating topmost window).
 
-use kapix_core::{Image, Rgba};
-use tiny_skia::{FillRule, Pixmap, Stroke, Transform};
+use kapix_core::{Image, Rect};
+use tiny_skia::Pixmap;
 
-use crate::canvas::{self, paint, rrect_path};
+use crate::canvas::{self, fill_rrect, stroke_rrect};
 use crate::font::Font;
+use crate::icons::{self, Icon};
+use crate::shadow;
+use crate::theme::{Palette, RADIUS_PAD};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToastKind {
@@ -21,144 +24,106 @@ pub struct Toast {
     pub body: String,
 }
 
-const CARD: Rgba = Rgba::rgb(0x1F, 0x29, 0x37);
-const TITLE: Rgba = Rgba::rgb(0xF9, 0xFA, 0xFB);
-const MUTED: Rgba = Rgba::rgb(0x9C, 0xA3, 0xAF);
+/// A rendered toast: the bitmap (card plus transparent shadow margins) and where the visible
+/// card sits inside it, so the host can keep the *card* — not the shadow — at its screen margin.
+#[derive(Debug, Clone)]
+pub struct Rendered {
+    /// Premultiplied BGRA for `UpdateLayeredWindow(ULW_ALPHA)`.
+    pub image: Image,
+    /// The card rect inside `image`.
+    pub card: Rect,
+}
+
 const MAX_BODY_LINES: usize = 3;
 
-fn accent(kind: ToastKind) -> Rgba {
+fn icon_for(kind: ToastKind, p: &Palette) -> (Icon, kapix_core::Rgba) {
     match kind {
-        ToastKind::Success => Rgba::rgb(0x10, 0xB9, 0x81),
-        ToastKind::Info => Rgba::rgb(0x38, 0xA1, 0xF5),
-        ToastKind::Error => Rgba::rgb(0xEF, 0x44, 0x44),
+        ToastKind::Success => (Icon::Check, p.text),
+        ToastKind::Info => (Icon::Info, p.muted),
+        ToastKind::Error => (Icon::Alert, p.red_text),
     }
 }
 
-/// Render a rounded dark pill/card with an accent dot for `kind`, title and body.
-/// Output is **premultiplied BGRA with transparent corners** suitable for
-/// `UpdateLayeredWindow(ULW_ALPHA)`. `scale` = monitor DPI scale (1.0 = 96 DPI).
-/// Width adapts to text (min 220, max 420 logical px). Without a font, renders the card only.
-pub fn render(toast: &Toast, font: Option<&Font>, scale: f32) -> Image {
+/// Render a Kavox popover card: `panel` fill, 1 px `line` border, radius 16, soft shadow, a
+/// 20 px lucide-style status icon, Medium title and Regular muted body (max 3 lines).
+/// `scale` = monitor DPI scale (1.0 = 96 DPI). Card width adapts to the text (min 220, max 420
+/// logical px).
+pub fn render(toast: &Toast, font: &Font, p: &Palette, scale: f32) -> Rendered {
     let s = scale.max(0.5);
     let pad = 14.0 * s;
-    let dot_col = 20.0 * s; // width of the dot gutter
+    let icon_sz = 20.0 * s;
+    let icon_gap = 12.0 * s;
+    let gutter = icon_sz + icon_gap;
     let title_px = 14.0 * s;
-    let body_px = 12.5 * s;
+    let body_px = 12.0 * s;
     let (min_w, max_w) = (220.0 * s, 420.0 * s);
-    let text_max = max_w - pad * 2.0 - dot_col;
+    let text_max = max_w - pad * 2.0 - gutter;
+    let (title_f, body_f) = (font.medium(), font.regular());
 
-    // Lay out body lines (word-wrapped, capped, ellipsized).
-    let mut body_lines: Vec<String> = Vec::new();
-    let mut title = toast.title.clone();
-    if let Some(f) = font {
-        title = ellipsize(f, &title, title_px, text_max, true);
-        if !toast.body.trim().is_empty() {
-            body_lines = wrap(f, &toast.body, body_px, text_max, MAX_BODY_LINES);
-        }
-    }
-
-    let (title_w, title_h, body_w, body_lh, body_h) = match font {
-        Some(f) => {
-            let tw = f.measure_bold(&title, title_px);
-            let th = f.measure("", title_px).1;
-            let bw = body_lines
-                .iter()
-                .map(|l| f.measure(l, body_px).0)
-                .fold(0.0, f32::max);
-            let lh = f.line_height(body_px);
-            let bh = if body_lines.is_empty() {
-                0.0
-            } else {
-                lh * (body_lines.len() - 1) as f32 + f.measure("", body_px).1
-            };
-            (tw, th, bw, lh, bh)
-        }
-        None => (
-            0.0,
-            title_px,
-            0.0,
-            body_px,
-            if toast.body.is_empty() { 0.0 } else { body_px },
-        ),
+    let title = ellipsize(&title_f, &toast.title, title_px, text_max);
+    let body_lines = if toast.body.trim().is_empty() {
+        Vec::new()
+    } else {
+        wrap(&body_f, &toast.body, body_px, text_max, MAX_BODY_LINES)
     };
-    let gap = if body_lines.is_empty() { 0.0 } else { 4.0 * s };
-    let w = (pad * 2.0 + dot_col + title_w.max(body_w))
+
+    let (title_w, title_h) = title_f.measure(&title, title_px);
+    let body_w = body_lines
+        .iter()
+        .map(|l| body_f.measure(l, body_px).0)
+        .fold(0.0, f32::max);
+    let body_lh = body_f.line_height(body_px);
+    let body_h = if body_lines.is_empty() {
+        0.0
+    } else {
+        body_lh * (body_lines.len() - 1) as f32 + body_f.measure("", body_px).1
+    };
+    let gap = if body_lines.is_empty() { 0.0 } else { 3.0 * s };
+    let w = (pad * 2.0 + gutter + title_w.max(body_w))
         .clamp(min_w, max_w)
         .ceil();
-    let h = (pad * 2.0 + title_h + gap + body_h).max(44.0 * s).ceil();
-    let (wi, hi) = (w as u32, h as u32);
+    let h = (pad * 2.0 + (title_h + gap + body_h).max(icon_sz))
+        .max(48.0 * s)
+        .ceil();
 
-    let mut pm = Pixmap::new(wi, hi).expect("non-empty toast");
-    let radius = (12.0 * s).min(h / 2.0);
-    if let Some(path) = rrect_path(0.0, 0.0, w, h, radius) {
-        pm.fill_path(
-            &path,
-            &paint(CARD.with_alpha(250)),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
-    }
-    // Hairline border for definition on dark backgrounds.
-    if let Some(path) = rrect_path(0.5, 0.5, w - 1.0, h - 1.0, radius - 0.5) {
-        let stroke = Stroke {
-            width: 1.0,
-            ..Stroke::default()
-        };
-        pm.stroke_path(
-            &path,
-            &paint(Rgba::rgb(255, 255, 255).with_alpha(26)),
-            &stroke,
-            Transform::identity(),
-            None,
-        );
-    }
+    let (ml, mt, mr, mb) = shadow::margins(s);
+    let (wi, hi) = (w as i32 + ml + mr, h as i32 + mt + mb);
+    let card = Rect::new(ml, mt, w as i32, h as i32);
+    let mut pm = Pixmap::new(wi as u32, hi as u32).expect("non-empty toast");
+    let radius = RADIUS_PAD * s;
+    shadow::draw(&mut pm, card, radius, s, p.shadow);
+    fill_rrect(&mut pm, card, radius, p.panel);
+    stroke_rrect(&mut pm, card, radius, 1.0, p.line);
 
+    let (cx, cy) = (card.x as f32, card.y as f32);
     let content_h = title_h + gap + body_h;
-    let top = (h - content_h) / 2.0;
-    // Accent dot, vertically aligned with the title's x-height center.
-    let dot_r = 4.5 * s;
-    let (dcx, dcy) = (pad + dot_r, top + title_h * 0.52);
-    if let Some(path) = tiny_skia::PathBuilder::from_circle(dcx, dcy, dot_r + 3.0 * s) {
-        pm.fill_path(
-            &path,
-            &paint(accent(toast.kind).with_alpha(46)),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
+    let top = cy + (h - content_h) / 2.0;
+    let (icon, icon_col) = icon_for(toast.kind, p);
+    icons::draw(
+        &mut pm,
+        icon,
+        cx + pad + icon_sz / 2.0,
+        top + title_h / 2.0,
+        icon_sz,
+        icon_col,
+        false,
+    );
+    let x = cx + pad + gutter;
+    title_f.draw(&mut pm, &title, x, top, title_px, p.text);
+    let mut y = top + title_h + gap;
+    for line in &body_lines {
+        body_f.draw(&mut pm, line, x, y, body_px, p.muted);
+        y += body_lh;
     }
-    if let Some(path) = tiny_skia::PathBuilder::from_circle(dcx, dcy, dot_r) {
-        pm.fill_path(
-            &path,
-            &paint(accent(toast.kind)),
-            FillRule::Winding,
-            Transform::identity(),
-            None,
-        );
+    Rendered {
+        image: canvas::pixmap_to_image(pm),
+        card,
     }
-
-    if let Some(f) = font {
-        let x = pad + dot_col;
-        f.draw_bold(&mut pm, &title, x, top, title_px, TITLE);
-        let mut y = top + title_h + gap;
-        for line in &body_lines {
-            f.draw(&mut pm, line, x, y, body_px, MUTED);
-            y += body_lh;
-        }
-    }
-    canvas::pixmap_to_image(pm)
 }
 
 /// Shorten `text` with an ellipsis so it fits `max_w`.
-fn ellipsize(f: &Font, text: &str, px: f32, max_w: f32, bold: bool) -> String {
-    let width = |t: &str| {
-        if bold {
-            f.measure_bold(t, px)
-        } else {
-            f.measure(t, px).0
-        }
-    };
+fn ellipsize(f: &Font, text: &str, px: f32, max_w: f32) -> String {
+    let width = |t: &str| f.measure(t, px).0;
     let text = text.replace('\n', " ");
     if width(&text) <= max_w {
         return text;
@@ -212,7 +177,7 @@ fn wrap(f: &Font, text: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<Stri
     if lines.len() > max_lines {
         lines.truncate(max_lines);
         if let Some(last) = lines.last_mut() {
-            *last = ellipsize(f, &format!("{last}…"), px, max_w, false);
+            *last = ellipsize(f, &format!("{last}…"), px, max_w);
         }
     }
     lines
@@ -231,64 +196,98 @@ mod tests {
         }
     }
 
+    fn r(kind: ToastKind, title: &str, body: &str, p: &Palette, s: f32) -> Rendered {
+        render(&t(kind, title, body), &test_font::load(), p, s)
+    }
+
     #[test]
-    fn card_without_font_has_transparent_corners_and_min_width() {
-        let img = render(&t(ToastKind::Success, "Copied", ""), None, 1.0);
-        assert_eq!(img.width, 220);
-        assert_eq!(img.data.len(), (img.width * img.height * 4) as usize);
-        assert_eq!(img.pixel(0, 0)[3], 0);
-        let mid = img.pixel(img.width - 40, img.height / 2);
-        assert!(mid[3] > 240, "card is (nearly) opaque inside: {mid:?}");
+    fn card_has_transparent_margins_and_min_width() {
+        for p in [Palette::DARK, Palette::LIGHT] {
+            let out = r(ToastKind::Success, "Copied", "", &p, 1.0);
+            let img = &out.image;
+            assert_eq!(out.card.w, 220);
+            assert_eq!(img.data.len(), (img.width * img.height * 4) as usize);
+            assert_eq!(img.pixel(0, 0)[3], 0, "outer shadow margin is transparent");
+            // Card corner is rounded (transparent-ish), card body is opaque panel.
+            let mid = img.pixel(
+                (out.card.right() - 20) as u32,
+                (out.card.y + out.card.h / 2) as u32,
+            );
+            assert_eq!(mid[3], 255, "card is opaque inside: {mid:?}");
+            assert_eq!([mid[2], mid[1], mid[0]], [p.panel.r, p.panel.g, p.panel.b]);
+            // Shadow shows below the card.
+            let below = img.pixel(img.width / 2, (out.card.bottom() + 4) as u32);
+            assert!(below[3] > 0, "shadow under the card");
+        }
     }
 
     #[test]
     fn premultiplied_output() {
-        let img = render(
-            &t(ToastKind::Error, "Oops", "x"),
-            test_font::load().as_ref(),
-            1.0,
-        );
-        for p in img.data.chunks_exact(4) {
+        let out = r(ToastKind::Error, "Oops", "x", &Palette::LIGHT, 1.0);
+        for p in out.image.data.chunks_exact(4) {
             assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3], "{p:?}");
         }
     }
 
     #[test]
-    fn accent_dot_is_the_kind_color_in_bgra() {
-        let img = render(&t(ToastKind::Error, "Failed", ""), None, 1.0);
-        let found = img
-            .data
-            .chunks_exact(4)
-            .any(|p| p[2] > 220 && p[1] < 90 && p[0] < 90 && p[3] == 255);
-        assert!(found, "red dot present");
+    fn error_icon_uses_red_text() {
+        let p = Palette::DARK;
+        let out = r(ToastKind::Error, "Failed", "", &p, 2.0);
+        let found = out.image.data.chunks_exact(4).any(|q| {
+            q[3] == 255
+                && (q[2] as i32 - p.red_text.r as i32).abs() < 12
+                && (q[1] as i32 - p.red_text.g as i32).abs() < 12
+                && (q[0] as i32 - p.red_text.b as i32).abs() < 12
+        });
+        assert!(found, "red_text pixels present");
     }
 
     #[test]
     fn width_adapts_and_is_capped_and_scaled() {
-        let Some(f) = test_font::load() else { return };
-        let short = render(&t(ToastKind::Info, "Hi", ""), Some(&f), 1.0);
-        let long = render(
-            &t(
-                ToastKind::Info,
-                "A rather long toast title that really cannot fit on a single line of this card at all",
-                "body",
-            ),
-            Some(&f),
+        let p = Palette::DARK;
+        let short = r(ToastKind::Info, "Hi", "", &p, 1.0);
+        let long = r(
+            ToastKind::Info,
+            "A rather long toast title that really cannot fit on a single line of this card at all",
+            "body",
+            &p,
             1.0,
         );
-        assert_eq!(short.width, 220);
-        assert!((380..=420).contains(&long.width), "{}", long.width);
-        let big = render(&t(ToastKind::Info, "Hi", ""), Some(&f), 1.5);
-        assert_eq!(big.width, 330);
-        let body = render(
-            &t(
-                ToastKind::Success,
-                "Text copied",
-                "line one\nline two with more words in it to wrap around the card for sure yes\nthree\nfour",
-            ),
-            Some(&f),
+        assert_eq!(short.card.w, 220);
+        assert!((380..=420).contains(&long.card.w), "{}", long.card.w);
+        let big = r(ToastKind::Info, "Hi", "", &p, 1.5);
+        assert_eq!(big.card.w, 330);
+        let body = r(
+            ToastKind::Success,
+            "Text copied",
+            "line one\nline two with more words in it to wrap around the card for sure yes\nthree\nfour",
+            &p,
             1.0,
         );
-        assert!(body.height > short.height + 20);
+        assert!(body.card.h > short.card.h + 20);
+    }
+
+    #[test]
+    fn non_latin_text_uses_the_fallback() {
+        let Some(bytes) = test_font::system_fallback() else {
+            return;
+        };
+        let f = Font::new(Some(bytes));
+        let plain = render(
+            &t(ToastKind::Info, "ж", ""),
+            &Font::builtin(),
+            &Palette::DARK,
+            1.0,
+        );
+        let with = render(&t(ToastKind::Info, "ж", ""), &f, &Palette::DARK, 1.0);
+        let ink = |o: &Rendered| {
+            o.image
+                .data
+                .chunks_exact(4)
+                .filter(|q| q[2] > 150 && q[1] > 150 && q[3] == 255)
+                .count()
+        };
+        assert!(ink(&with) > 10, "fallback glyph is drawn");
+        let _ = plain;
     }
 }

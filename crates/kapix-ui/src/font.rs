@@ -1,26 +1,106 @@
-//! System-font text rendering via `ab_glyph`. Fonts are loaded from bytes supplied by the host
-//! (on Windows: `%WINDIR%\Fonts\segoeui.ttf`); nothing is embedded in the binary.
+//! Text rendering via `ab_glyph`. Kapix embeds the Kavox-family Archivo typeface (Latin subset:
+//! Regular, Medium and SemiExpanded SemiBold); characters Archivo lacks are drawn with an
+//! optional fallback face supplied by the host (on Windows: `%WINDIR%\Fonts\segoeui.ttf`).
+//!
+//! All `px` arguments are **font sizes** (CSS-style em size), so "14" means the same as in
+//! Kavox's UI.
 
-use ab_glyph::{Font as _, FontArc, Glyph, PxScale, ScaleFont, point};
+use std::sync::{Arc, OnceLock};
+
+use ab_glyph::{Font as _, FontArc, Glyph, GlyphId, PxScale, ScaleFont, point};
 use kapix_core::Rgba;
 
 use crate::canvas::blend_px;
 
+const ARCHIVO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/Archivo-Regular.ttf");
+const ARCHIVO_MEDIUM: &[u8] = include_bytes!("../../../assets/fonts/Archivo-Medium.ttf");
+const ARCHIVO_HEADING: &[u8] =
+    include_bytes!("../../../assets/fonts/ArchivoSemiExpanded-SemiBold.ttf");
+
+/// Which embedded Archivo cut to draw with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Weight {
+    /// Body text.
+    Regular,
+    /// Labels and buttons.
+    Medium,
+    /// Headings (SemiExpanded SemiBold).
+    Heading,
+}
+
+struct Faces {
+    archivo: [FontArc; 3],
+    fallback: Option<FontArc>,
+}
+
+fn archivo() -> &'static [FontArc; 3] {
+    static FACES: OnceLock<[FontArc; 3]> = OnceLock::new();
+    FACES.get_or_init(|| {
+        let load =
+            |b: &'static [u8]| FontArc::try_from_slice(b).expect("embedded Archivo is valid");
+        [
+            load(ARCHIVO_REGULAR),
+            load(ARCHIVO_MEDIUM),
+            load(ARCHIVO_HEADING),
+        ]
+    })
+}
+
+/// The Kapix font family at one weight; clones are cheap (shared faces).
 #[derive(Clone)]
 pub struct Font {
-    inner: FontArc,
+    faces: Arc<Faces>,
+    weight: Weight,
 }
 
 impl Font {
-    /// Parse TTF/OTF bytes. `None` if the data isn't a valid font.
-    pub fn from_bytes(data: Vec<u8>) -> Option<Font> {
-        FontArc::try_from_vec(data).ok().map(|inner| Font { inner })
+    /// Archivo plus an optional fallback face (TTF/OTF bytes; invalid data is ignored).
+    pub fn new(fallback: Option<Vec<u8>>) -> Font {
+        Font {
+            faces: Arc::new(Faces {
+                archivo: archivo().clone(),
+                fallback: fallback.and_then(|d| FontArc::try_from_vec(d).ok()),
+            }),
+            weight: Weight::Regular,
+        }
+    }
+
+    /// Archivo only (no fallback for non-Latin scripts).
+    pub fn builtin() -> Font {
+        Font::new(None)
+    }
+
+    pub fn with_weight(&self, weight: Weight) -> Font {
+        Font {
+            faces: self.faces.clone(),
+            weight,
+        }
+    }
+    pub fn regular(&self) -> Font {
+        self.with_weight(Weight::Regular)
+    }
+    pub fn medium(&self) -> Font {
+        self.with_weight(Weight::Medium)
+    }
+    pub fn heading(&self) -> Font {
+        self.with_weight(Weight::Heading)
+    }
+
+    fn primary(&self) -> &FontArc {
+        &self.faces.archivo[self.weight as usize]
+    }
+
+    /// `PxScale` that makes `face` render at em size `px`.
+    fn scale_for(face: &FontArc, px: f32) -> PxScale {
+        let upem = face.units_per_em().unwrap_or(1000.0);
+        PxScale::from(px * face.height_unscaled() / upem)
     }
 
     /// `(width, height)` in px of a single line of `text` at `px` size
     /// (height = ascent - descent).
     pub fn measure(&self, text: &str, px: f32) -> (f32, f32) {
-        let scaled = self.inner.as_scaled(PxScale::from(px));
+        let p = self.primary();
+        let scaled = p.as_scaled(Self::scale_for(p, px));
         (
             self.line_width(text, px),
             scaled.ascent() - scaled.descent(),
@@ -29,7 +109,8 @@ impl Font {
 
     /// Line height (ascent - descent + line gap) at `px`.
     pub fn line_height(&self, px: f32) -> f32 {
-        let s = self.inner.as_scaled(PxScale::from(px));
+        let p = self.primary();
+        let s = p.as_scaled(Self::scale_for(p, px));
         s.ascent() - s.descent() + s.line_gap()
     }
 
@@ -133,39 +214,44 @@ impl Font {
         }
     }
 
-    /// Same as [`Font::draw`] but with a faux-bold look (double-struck with a sub-pixel offset).
-    pub fn draw_bold(
-        &self,
-        pixmap: &mut tiny_skia::Pixmap,
-        text: &str,
-        x: f32,
-        y: f32,
-        px: f32,
-        color: Rgba,
-    ) {
-        let o = (px * 0.028).max(0.3);
-        self.draw(pixmap, text, x, y, px, color);
-        self.draw(pixmap, text, x + o, y, px, color);
-    }
-
-    /// Width of the bold variant drawn by [`Font::draw_bold`].
-    pub fn measure_bold(&self, text: &str, px: f32) -> f32 {
-        self.line_width(text, px) + (px * 0.028).max(0.3)
-    }
-
     fn line_width(&self, text: &str, px: f32) -> f32 {
-        let scaled = self.inner.as_scaled(PxScale::from(px));
-        let mut w = 0.0;
-        let mut prev = None;
+        self.walk(text, px, |_, _, _, _| {})
+    }
+
+    /// Lay `text` out on a single line, calling `f(face, scale, glyph, caret_x)` for every
+    /// glyph; returns the total advance. Characters missing from Archivo use the fallback face.
+    fn walk(&self, text: &str, px: f32, mut f: impl FnMut(&FontArc, PxScale, GlyphId, f32)) -> f32 {
+        let primary = self.primary();
+        let pscale = Self::scale_for(primary, px);
+        let fscale = self
+            .faces
+            .fallback
+            .as_ref()
+            .map(|fb| Self::scale_for(fb, px));
+        let mut caret = 0.0;
+        let mut prev: Option<(bool, GlyphId)> = None;
         for c in text.chars().filter(|c| !c.is_control()) {
-            let id = scaled.glyph_id(c);
-            if let Some(p) = prev {
-                w += scaled.kern(p, id);
+            let (mut face, mut scale, mut id, mut fb) =
+                (primary, pscale, primary.glyph_id(c), false);
+            if id.0 == 0 {
+                if let (Some(ff), Some(fs)) = (&self.faces.fallback, fscale) {
+                    let fid = ff.glyph_id(c);
+                    if fid.0 != 0 {
+                        (face, scale, id, fb) = (ff, fs, fid, true);
+                    }
+                }
             }
-            w += scaled.h_advance(id);
-            prev = Some(id);
+            let sf = face.as_scaled(scale);
+            if let Some((pfb, pid)) = prev {
+                if pfb == fb {
+                    caret += sf.kern(pid, id);
+                }
+            }
+            f(face, scale, id, caret);
+            caret += sf.h_advance(id);
+            prev = Some((fb, id));
         }
-        w
+        caret
     }
 
     fn for_each_glyph(
@@ -176,23 +262,18 @@ impl Font {
         px: f32,
         mut f: impl FnMut(&ab_glyph::OutlinedGlyph),
     ) {
-        let scaled = self.inner.as_scaled(PxScale::from(px));
-        let baseline = y + scaled.ascent();
-        let mut caret = x;
-        let mut prev = None;
-        for c in text.chars().filter(|c| !c.is_control()) {
-            let id = scaled.glyph_id(c);
-            if let Some(p) = prev {
-                caret += scaled.kern(p, id);
-            }
-            let glyph: Glyph =
-                id.with_scale_and_position(PxScale::from(px), point(caret, baseline));
-            caret += scaled.h_advance(id);
-            prev = Some(id);
-            if let Some(og) = self.inner.outline_glyph(glyph) {
+        let baseline = y + self.ascent(px);
+        self.walk(text, px, |face, scale, id, caret| {
+            let glyph: Glyph = id.with_scale_and_position(scale, point(x + caret, baseline));
+            if let Some(og) = face.outline_glyph(glyph) {
                 f(&og);
             }
-        }
+        });
+    }
+
+    fn ascent(&self, px: f32) -> f32 {
+        let p = self.primary();
+        p.as_scaled(Self::scale_for(p, px)).ascent()
     }
 }
 
@@ -200,19 +281,20 @@ impl Font {
 pub(crate) mod test_font {
     use super::Font;
 
-    /// Look for any usable TTF on the machine; tests skip text assertions when none exists.
-    pub fn load() -> Option<Font> {
+    /// Archivo only: deterministic on every machine.
+    pub fn load() -> Font {
+        Font::builtin()
+    }
+
+    /// A system face with broad Unicode coverage, when the machine has one.
+    pub fn system_fallback() -> Option<Vec<u8>> {
         const CANDIDATES: &[&str] = &[
             "/usr/share/fonts/TTF/DejaVuSans.ttf",
             "/usr/share/fonts/dejavu/DejaVuSans.ttf",
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
-            "/usr/share/fonts/TTF/Roboto-Regular.ttf",
             "C:\\Windows\\Fonts\\segoeui.ttf",
         ];
-        CANDIDATES
-            .iter()
-            .find_map(|p| std::fs::read(p).ok().and_then(Font::from_bytes))
+        CANDIDATES.iter().find_map(|p| std::fs::read(p).ok())
     }
 }
 
@@ -220,14 +302,13 @@ pub(crate) mod test_font {
 mod tests {
     use super::*;
 
-    #[test]
-    fn rejects_garbage() {
-        assert!(Font::from_bytes(vec![1, 2, 3]).is_none());
+    fn ink(pm: &tiny_skia::Pixmap) -> usize {
+        pm.data().chunks_exact(4).filter(|p| p[0] > 100).count()
     }
 
     #[test]
     fn measure_and_draw() {
-        let Some(f) = test_font::load() else { return };
+        let f = test_font::load();
         let (w1, h1) = f.measure("Hello", 20.0);
         let (w2, _) = f.measure("Hello Hello", 20.0);
         assert!(w1 > 20.0 && w2 > w1 * 1.8, "{w1} {w2}");
@@ -239,7 +320,7 @@ mod tests {
         let mut pm = tiny_skia::Pixmap::new(80, 40).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
         f.draw(&mut pm, "Hi", 4.0, 4.0, 24.0, Rgba::rgb(255, 255, 255));
-        assert!(pm.data().chunks_exact(4).any(|p| p[0] > 200));
+        assert!(ink(&pm) > 20);
         // Clipping far outside is harmless.
         f.draw(
             &mut pm,
@@ -253,8 +334,19 @@ mod tests {
     }
 
     #[test]
+    fn weights_differ() {
+        let f = test_font::load();
+        let (r, m, h) = (
+            f.measure("Capture", 14.0).0,
+            f.medium().measure("Capture", 14.0).0,
+            f.heading().measure("Capture", 14.0).0,
+        );
+        assert!(m > r && h > m, "{r} {m} {h}");
+    }
+
+    #[test]
     fn color_channel_order_is_bgra() {
-        let Some(f) = test_font::load() else { return };
+        let f = test_font::load();
         let mut pm = tiny_skia::Pixmap::new(60, 40).unwrap();
         pm.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
         f.draw(&mut pm, "H", 4.0, 2.0, 32.0, Rgba::rgb(255, 0, 0));
@@ -264,5 +356,29 @@ mod tests {
             .find(|p| p[2] > 200)
             .expect("red ink");
         assert!(hit[0] < 30, "blue channel stays low: {hit:?}");
+    }
+
+    #[test]
+    fn fallback_covers_missing_glyphs() {
+        let plain = Font::builtin();
+        assert!(
+            plain.primary().glyph_id('ж').0 == 0,
+            "Latin subset has no Cyrillic"
+        );
+        let Some(bytes) = test_font::system_fallback() else {
+            return;
+        };
+        let with = Font::new(Some(bytes));
+        let draw = |f: &Font| {
+            let mut pm = tiny_skia::Pixmap::new(60, 40).unwrap();
+            pm.fill(tiny_skia::Color::from_rgba8(0, 0, 0, 255));
+            f.draw(&mut pm, "ж", 4.0, 2.0, 28.0, Rgba::rgb(255, 255, 255));
+            ink(&pm)
+        };
+        assert!(draw(&with) > 20, "fallback glyph drawn");
+        // Latin text never touches the fallback.
+        assert_eq!(with.measure("Hello", 14.0), plain.measure("Hello", 14.0));
+        // Invalid fallback bytes are ignored.
+        assert!(Font::new(Some(vec![1, 2, 3])).faces.fallback.is_none());
     }
 }

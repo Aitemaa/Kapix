@@ -4,12 +4,12 @@ use std::time::Instant;
 
 use kapix_core::config::DefaultAction;
 use kapix_core::{Image, Monitor, Rect, VirtualDesktop};
-use kapix_ui::{Font, Input, Key, Mods, MouseButton, Overlay, OverlayInit, OverlayMode};
+use kapix_ui::{Font, Input, Key, Mods, MouseButton, Overlay, OverlayInit, OverlayMode, Palette};
 
 const W: u32 = 3840;
 const H: u32 = 2160;
 
-fn overlay(font: Option<Font>) -> Overlay {
+fn overlay(font: Font, palette: Palette) -> Overlay {
     let mut data = Vec::with_capacity((W * H * 4) as usize);
     for y in 0..H {
         for x in 0..W {
@@ -34,6 +34,7 @@ fn overlay(font: Option<Font>) -> Overlay {
         show_magnifier: true,
         window_snap: true,
         font,
+        palette,
         cursor: (100, 100),
     })
 }
@@ -75,15 +76,16 @@ fn wobble(i: usize, cx: i32, cy: i32, r: i32) -> (i32, i32) {
 }
 
 fn main() {
-    let font = [
-        "/usr/share/fonts/TTF/DejaVuSans.ttf",
-        "C:\\Windows\\Fonts\\segoeui.ttf",
-    ]
-    .iter()
-    .find_map(|p| std::fs::read(p).ok().and_then(Font::from_bytes));
-    println!("frame {W}x{H}, font: {}", font.is_some());
+    // Archivo (embedded) + DejaVu as the fallback when present; the theme comes from argv.
+    let font = Font::new(std::fs::read("/usr/share/fonts/TTF/DejaVuSans.ttf").ok());
+    let light = std::env::args().any(|a| a == "--light");
+    let palette = if light { Palette::LIGHT } else { Palette::DARK };
+    println!(
+        "frame {W}x{H}, theme: {}",
+        if light { "light" } else { "dark" }
+    );
 
-    let mut o = overlay(font.clone());
+    let mut o = overlay(font.clone(), palette);
     let t = Instant::now();
     o.paint();
     println!(
@@ -96,7 +98,7 @@ fn main() {
         run(&mut o, 1500, |i| wobble(i, 1900, 1000, 900)),
     );
 
-    let mut o = overlay(font.clone());
+    let mut o = overlay(font.clone(), palette);
     o.paint();
     o.handle(Input::MouseMove {
         x: 300,

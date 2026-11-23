@@ -15,6 +15,7 @@ pub mod ocr;
 pub mod paths;
 pub mod snap;
 pub mod startup;
+pub mod theme;
 pub mod time;
 
 /// Error with a human-readable message (HRESULT text included when from Win32/WinRT).

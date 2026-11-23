@@ -36,4 +36,9 @@ windows = { workspace = true, features = [
 ] }
 
 [build-dependencies]
+# Pure-Rust manifest embedding, used when cross-compiling from a non-Windows host.
 embed-manifest.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+# Icon + manifest in a single resource script when building on Windows (build-time only).
+winresource = "0.1"

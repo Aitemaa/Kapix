@@ -44,13 +44,14 @@ impl Rgba {
 }
 
 /// Preset palette, keys `1`–`6`: Red, Amber, Emerald, Sky, White, Ink.
+/// Red and Amber are the Kavox brand red / dark-theme amber; White and Ink are warm neutrals.
 pub const PRESETS: [Rgba; 6] = [
-    Rgba::rgb(0xEF, 0x44, 0x44),
-    Rgba::rgb(0xF5, 0x9E, 0x0B),
+    Rgba::rgb(0xE8, 0x26, 0x2D),
+    Rgba::rgb(0xF2, 0xA9, 0x3B),
     Rgba::rgb(0x10, 0xB9, 0x81),
     Rgba::rgb(0x0E, 0xA5, 0xE9),
-    Rgba::rgb(0xFF, 0xFF, 0xFF),
-    Rgba::rgb(0x11, 0x18, 0x27),
+    Rgba::rgb(0xF2, 0xF1, 0xEE),
+    Rgba::rgb(0x14, 0x14, 0x14),
 ];
 
 pub const PRESET_NAMES: [&str; 6] = ["Red", "Amber", "Emerald", "Sky", "White", "Ink"];
@@ -61,7 +62,10 @@ mod tests {
 
     #[test]
     fn hex_and_bgra() {
-        assert_eq!(PRESETS[0].hex(), "#EF4444");
+        assert_eq!(PRESETS[0].hex(), "#E8262D");
+        assert_eq!(PRESETS[1].hex(), "#F2A93B");
+        assert_eq!(PRESETS[4].hex(), "#F2F1EE");
+        assert_eq!(PRESETS[5].hex(), "#141414");
         assert_eq!(Rgba::from_bgra([1, 2, 3, 255]), Rgba::rgb(3, 2, 1));
         assert_eq!(Rgba::rgb(1, 2, 3).with_alpha(9).a, 9);
     }

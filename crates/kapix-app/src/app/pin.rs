@@ -31,6 +31,8 @@ struct Pin {
     image: Image,
     zoom: Cell<f32>,
     alpha: Cell<u8>,
+    /// `0x00BBGGRR` border color (Kavox `line_strong` for the active theme).
+    border: u32,
 }
 
 pub fn register() {
@@ -47,6 +49,7 @@ pub fn create(image: Image, at: Rect) {
         image,
         zoom: Cell::new(zoom),
         alpha: Cell::new(255),
+        border: winutil::colorref(winutil::palette(super::cfg().ui.theme).line_strong),
     }));
     let res = unsafe {
         CreateWindowExW(
@@ -101,7 +104,8 @@ fn paint(hwnd: HWND, pin: &Pin) {
             DIB_RGB_COLORS,
             SRCCOPY,
         );
-        // 1 px accent border (#0EA5E9).
+        // 1 px neutral Kavox border so the pin reads on any backdrop.
+        let border = pin.border;
         let (w, h) = (rc.right, rc.bottom);
         for r in [
             Rect::new(0, 0, w, 1),
@@ -109,7 +113,7 @@ fn paint(hwnd: HWND, pin: &Pin) {
             Rect::new(0, 0, 1, h),
             Rect::new(w - 1, 0, 1, h),
         ] {
-            winutil::fill(hdc, r, 0x00E9_A50E);
+            winutil::fill(hdc, r, border);
         }
         let _ = EndPaint(hwnd, &ps);
     }

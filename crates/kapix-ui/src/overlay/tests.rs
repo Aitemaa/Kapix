@@ -2,7 +2,7 @@ use super::*;
 use crate::font::test_font;
 use kapix_core::{Monitor, Point};
 
-const FW: u32 = 640;
+const FW: u32 = 760;
 const FH: u32 = 400;
 
 fn frame() -> Image {
@@ -28,7 +28,7 @@ fn desktop() -> VirtualDesktop {
     }
 }
 
-fn init(action: DefaultAction, mode: OverlayMode, font: Option<Font>) -> OverlayInit {
+fn init(action: DefaultAction, mode: OverlayMode, font: Font) -> OverlayInit {
     OverlayInit {
         frame: frame(),
         desktop: desktop(),
@@ -38,6 +38,7 @@ fn init(action: DefaultAction, mode: OverlayMode, font: Option<Font>) -> Overlay
         show_magnifier: true,
         window_snap: true,
         font,
+        palette: Palette::DARK,
         cursor: (10, 10),
     }
 }
@@ -147,7 +148,11 @@ fn selection_is_clamped_to_frame() {
 fn zero_area_drag_is_ignored() {
     let mut o = Overlay::new(OverlayInit {
         windows: vec![],
-        ..init(DefaultAction::Annotate, OverlayMode::Region, None)
+        ..init(
+            DefaultAction::Annotate,
+            OverlayMode::Region,
+            test_font::load(),
+        )
     });
     // Press/release without movement.
     assert!(!click(&mut o, 120, 120).is_terminal());
@@ -161,7 +166,11 @@ fn zero_area_drag_is_ignored() {
 
 #[test]
 fn instant_copy_returns_exact_raw_crop() {
-    let mut o = Overlay::new(init(DefaultAction::InstantCopy, OverlayMode::Region, None));
+    let mut o = Overlay::new(init(
+        DefaultAction::InstantCopy,
+        OverlayMode::Region,
+        test_font::load(),
+    ));
     match drag(&mut o, (100, 100), (300, 250)) {
         Outcome::Copy(img) => {
             assert_eq!((img.width, img.height), (200, 150));
@@ -177,7 +186,11 @@ fn instant_copy_returns_exact_raw_crop() {
 
 #[test]
 fn alt_on_release_enters_annotating_in_instant_mode() {
-    let mut o = Overlay::new(init(DefaultAction::InstantCopy, OverlayMode::Region, None));
+    let mut o = Overlay::new(init(
+        DefaultAction::InstantCopy,
+        OverlayMode::Region,
+        test_font::load(),
+    ));
     mv(&mut o, 100, 100);
     down(&mut o, 100, 100);
     mv(&mut o, 200, 200);
@@ -188,7 +201,11 @@ fn alt_on_release_enters_annotating_in_instant_mode() {
 
 #[test]
 fn ocr_mode_returns_raw_crop() {
-    let mut o = Overlay::new(init(DefaultAction::Annotate, OverlayMode::Ocr, None));
+    let mut o = Overlay::new(init(
+        DefaultAction::Annotate,
+        OverlayMode::Ocr,
+        test_font::load(),
+    ));
     match drag(&mut o, (50, 60), (150, 120)) {
         Outcome::Ocr(img) => {
             assert_eq!((img.width, img.height), (100, 60));
@@ -223,7 +240,11 @@ fn drag_beyond_slop_ignores_snap_and_is_freeform() {
 fn snap_disabled_click_does_nothing() {
     let mut o = Overlay::new(OverlayInit {
         window_snap: false,
-        ..init(DefaultAction::Annotate, OverlayMode::Region, None)
+        ..init(
+            DefaultAction::Annotate,
+            OverlayMode::Region,
+            test_font::load(),
+        )
     });
     click(&mut o, 350, 150);
     assert!(!o.is_annotating());
@@ -669,7 +690,7 @@ fn toolbar_does_not_start_drawing_and_stays_on_monitor() {
     assert!(r.bottom() <= 300, "above the selection: {r:?}");
     // Tall selection: toolbar goes inside the bottom.
     let mut o = overlay();
-    drag(&mut o, (20, 5), (620, 395));
+    drag(&mut o, (20, 5), (FW as i32 - 20, 395));
     let r = o.toolbar_rect().unwrap();
     assert!(
         Rect::new(0, 0, FW as i32, FH as i32).contains_rect(&r),
@@ -815,7 +836,11 @@ fn first_paint_is_full_then_idle_paint_is_none() {
 
 #[test]
 fn selecting_dims_outside_and_keeps_bright_inside_selection() {
-    let mut o = Overlay::new(init(DefaultAction::Annotate, OverlayMode::Region, None));
+    let mut o = Overlay::new(init(
+        DefaultAction::Annotate,
+        OverlayMode::Region,
+        test_font::load(),
+    ));
     o.handle(Input::MouseMove {
         x: 5,
         y: 5,
@@ -840,7 +865,7 @@ fn selecting_dims_outside_and_keeps_bright_inside_selection() {
 
 #[test]
 fn overlay_selection_matches_flatten() {
-    for font in [None, test_font::load()] {
+    for font in [Font::builtin(), Font::new(test_font::system_fallback())] {
         let mut o = Overlay::new(init(
             DefaultAction::Annotate,
             OverlayMode::Region,
@@ -872,7 +897,7 @@ fn overlay_selection_matches_flatten() {
         ch(&mut o, 'T');
         o.paint();
         let sel = o.selection().unwrap();
-        let flat = render::flatten(&frame(), sel, o.document().items(), font.as_ref());
+        let flat = render::flatten(&frame(), sel, o.document().items(), &font);
         // Compare the region strictly inside the border/handles and above the toolbar.
         let inner = sel.inflate(-12);
         let mut checked = 0;
@@ -918,7 +943,7 @@ fn export_pixelate_is_destructive() {
 /// Incremental dirty-rect painting must produce exactly the same pixels as a clean full repaint.
 #[test]
 fn incremental_paint_equals_full_repaint() {
-    for font in [None, test_font::load()] {
+    for font in [Font::builtin(), Font::new(test_font::system_fallback())] {
         let mut o = Overlay::new(init(DefaultAction::Annotate, OverlayMode::Region, font));
         let check = |o: &mut Overlay, what: &str| {
             o.paint();
@@ -1014,4 +1039,59 @@ fn incremental_paint_equals_full_repaint() {
         up(&mut o, sel.right() + 60, sel.bottom() + 60);
         check(&mut o, "resize end");
     }
+}
+
+#[test]
+fn theme_drives_scrim_and_selection_border() {
+    let raw = frame().pixel(5, 5);
+    let mut seen = Vec::new();
+    for pal in [Palette::DARK, Palette::LIGHT] {
+        let mut o = Overlay::new(OverlayInit {
+            palette: pal,
+            ..init(
+                DefaultAction::Annotate,
+                OverlayMode::Region,
+                test_font::load(),
+            )
+        });
+        mv(&mut o, 5, 5);
+        o.paint();
+        let dimmed = px(&o, 5, 5);
+        // out = raw * (1 - a) + scrim * a, per channel.
+        let a = pal.scrim.a as f32 / 255.0;
+        for (c, s) in [(0, pal.scrim.b), (1, pal.scrim.g), (2, pal.scrim.r)] {
+            let want = raw[c] as f32 * (1.0 - a) + s as f32 * a;
+            assert!(
+                (dimmed[c] as f32 - want).abs() <= 2.0,
+                "{c}: {dimmed:?} vs {want}"
+            );
+        }
+        drag(&mut o, (100, 100), (300, 250));
+        // The 1 px ring right outside the selection edge is the focus colour.
+        let ring = px(&o, 150, 99);
+        assert_eq!(
+            [ring[2], ring[1], ring[0]],
+            [pal.focus.r, pal.focus.g, pal.focus.b]
+        );
+        seen.push(dimmed);
+    }
+    assert_ne!(seen[0], seen[1], "light and dark scrims differ");
+}
+
+#[test]
+fn snap_highlight_washes_the_window_with_lit() {
+    let mut o = overlay();
+    // Hover inside the 200x150 window at (300, 100); away from the loupe card.
+    mv(&mut o, 400, 130);
+    o.paint();
+    let f = frame();
+    let (x, y) = (310u32, 240u32);
+    let got = px(&o, x as i32, y as i32);
+    let raw = f.pixel(x, y);
+    // ~8 % of the dark theme's off-white over the raw pixel: brighter, but not blown out.
+    for c in 0..3 {
+        assert!(got[c] >= raw[c], "{got:?} vs {raw:?}");
+        assert!(got[c] as i32 - raw[c] as i32 <= 22, "{got:?} vs {raw:?}");
+    }
+    assert_ne!(got, raw);
 }

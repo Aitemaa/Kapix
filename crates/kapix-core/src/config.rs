@@ -11,6 +11,24 @@ pub struct Config {
     pub capture: CaptureConfig,
     pub save: SaveConfig,
     pub ocr: OcrConfig,
+    pub ui: UiConfig,
+}
+
+/// Which palette the overlay and toasts use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ThemeMode {
+    /// Follow the Windows "app mode" (light / dark) setting.
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct UiConfig {
+    pub theme: ThemeMode,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -191,6 +209,10 @@ format = "png" # png | jpeg
 # "auto" uses Windows user profile languages; or BCP-47 tag e.g. "en-US", "ja"
 language = "auto"
 copy_notification = true
+
+[ui]
+# "system" follows the Windows app mode (light/dark) | "dark" | "light"
+theme = "system"
 "#;
 
 #[cfg(test)]
@@ -223,6 +245,7 @@ mod tests {
         assert_eq!(ImageFormat::Jpeg.extension(), "jpg");
         assert_eq!(c.ocr.language, "auto");
         assert!(c.ocr.copy_notification);
+        assert_eq!(c.ui.theme, ThemeMode::System);
         assert!(c.validate().is_empty());
     }
 
@@ -255,6 +278,11 @@ mod tests {
         assert_eq!(c.save.format, ImageFormat::Jpeg);
         assert!(c.save.auto_save);
         assert!(Config::parse("[capture]\ndefault_action = \"bogus\"").is_err());
+        let c = Config::parse("[ui]\ntheme = \"light\"").unwrap();
+        assert_eq!(c.ui.theme, ThemeMode::Light);
+        let c = Config::parse("[ui]\ntheme = \"dark\"").unwrap();
+        assert_eq!(c.ui.theme, ThemeMode::Dark);
+        assert!(Config::parse("[ui]\ntheme = \"neon\"").is_err());
     }
 
     #[test]

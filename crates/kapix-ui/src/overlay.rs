@@ -30,10 +30,11 @@ use kapix_core::config::DefaultAction;
 use kapix_core::{Annotation, Document, Image, Point, PointF, Rect, Rgba, Tool, VirtualDesktop};
 use tiny_skia::Pixmap;
 
-use crate::canvas::{self, rect_minus};
+use crate::canvas::{self, Dim, rect_minus};
 use crate::chrome::{self, Handle, LoupeData, hit_handle, px};
 use crate::font::Font;
 use crate::render;
+use crate::theme::Palette;
 use crate::toolbar::{self, Btn};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +56,10 @@ pub struct OverlayInit {
     pub default_action: DefaultAction,
     pub show_magnifier: bool,
     pub window_snap: bool,
-    pub font: Option<Font>,
+    /// UI + annotation typeface (Archivo, with the host's optional non-Latin fallback).
+    pub font: Font,
+    /// Theme tokens for the scrim, selection chrome, loupe and toolbar.
+    pub palette: Palette,
     /// Initial cursor position in buffer coordinates (so the loupe shows immediately).
     pub cursor: (i32, i32),
 }
@@ -373,7 +377,9 @@ pub struct Overlay {
     default_action: DefaultAction,
     show_magnifier: bool,
     window_snap: bool,
-    font: Option<Font>,
+    font: Font,
+    palette: Palette,
+    dim: Dim,
 
     cursor: Point,
     phase: Phase,
@@ -418,6 +424,8 @@ impl Overlay {
             show_magnifier: init.show_magnifier,
             window_snap: init.window_snap,
             font: init.font,
+            palette: init.palette,
+            dim: Dim::new(init.palette.scrim),
             cursor: Point::new(init.cursor.0, init.cursor.1),
             phase: Phase::Selecting,
             sel: None,
@@ -551,20 +559,29 @@ impl Overlay {
         }
         let dirty = merge_rects(dirty);
 
+        let tint = (self.selection().is_none() && bright.is_some())
+            .then(|| chrome::snap_tint(&self.palette));
         let Overlay {
             back,
             frame,
             composed,
             font,
+            palette,
+            dim,
             ..
         } = self;
         let base: &Pixmap = composed.as_ref().unwrap_or(frame);
+        let shade = Shade {
+            dim: *dim,
+            bright,
+            tint,
+        };
         for r in &dirty {
-            restore(back, base, bright, *r);
+            restore(back, base, &shade, *r);
         }
         for (i, it) in new_items.iter().enumerate() {
             if included[i] {
-                draw_elem(back, base, frame, bright, font.as_ref(), &it.elem);
+                draw_elem(back, base, frame, &shade, font, palette, &it.elem);
             }
         }
         self.items = new_items;
@@ -1131,12 +1148,8 @@ impl Overlay {
         match kind {
             Export::Ocr => Outcome::Ocr(render::crop_image(self.frame.as_ref(), sel)),
             _ => {
-                let img = render::flatten_ref(
-                    self.frame.as_ref(),
-                    sel,
-                    self.doc.items(),
-                    self.font.as_ref(),
-                );
+                let img =
+                    render::flatten_ref(self.frame.as_ref(), sel, self.doc.items(), &self.font);
                 match kind {
                     Export::Copy => Outcome::Copy(img),
                     Export::Save => Outcome::Save(img),
@@ -1154,7 +1167,7 @@ impl Overlay {
     // -----------------------------------------------------------------------------------------
 
     fn ann_bounds(&self, a: &Annotation) -> Rect {
-        render::annotation_bounds(a, self.font.as_ref())
+        render::annotation_bounds(a, &self.font)
     }
 
     fn ensure_composed(&mut self) -> &mut Pixmap {
@@ -1166,7 +1179,7 @@ impl Overlay {
         let b = self.ann_bounds(&a);
         let font = self.font.clone();
         let pm = self.ensure_composed();
-        render::render_annotations(pm, std::slice::from_ref(&a), (0, 0), font.as_ref());
+        render::render_annotations(pm, std::slice::from_ref(&a), (0, 0), &font);
         self.doc.push(a);
         self.pending.push(b);
     }
@@ -1176,7 +1189,7 @@ impl Overlay {
             self.composed = None;
         } else {
             let mut pm = self.frame.clone();
-            render::render_annotations(&mut pm, self.doc.items(), (0, 0), self.font.as_ref());
+            render::render_annotations(&mut pm, self.doc.items(), (0, 0), &self.font);
             self.composed = Some(pm);
         }
     }
@@ -1200,7 +1213,7 @@ impl Overlay {
         let b = self.ann_bounds(&a);
         let font = self.font.clone();
         let pm = self.ensure_composed();
-        render::render_annotations(pm, std::slice::from_ref(&a), (0, 0), font.as_ref());
+        render::render_annotations(pm, std::slice::from_ref(&a), (0, 0), &font);
         self.pending.push(b);
         Outcome::Redraw
     }
@@ -1215,10 +1228,7 @@ impl Overlay {
 
     fn begin_text(&mut self, p: PointF) {
         let size = self.text_size();
-        let lh = self
-            .font
-            .as_ref()
-            .map_or(size * 1.2, |f| f.measure("", size).1);
+        let lh = self.font.medium().measure("", size).1;
         self.text = Some(TextEdit {
             pos: PointF::new(p.x, p.y - lh / 2.0),
             text: String::new(),
@@ -1268,23 +1278,10 @@ impl Overlay {
         else {
             return None;
         };
-        let font = self.font.as_ref();
-        let (w, h, last_w, lh) = match font {
-            Some(f) => {
-                let (w, h) = f.measure_multiline(text, *size);
-                let last = text.rsplit('\n').next().unwrap_or("");
-                (w, h, f.measure(last, *size).0, f.line_height(*size))
-            }
-            None => {
-                let n = text.split('\n').count() as f32;
-                (
-                    size * 0.6 * text.len() as f32,
-                    size * 1.2 * n,
-                    size * 0.6 * text.rsplit('\n').next().unwrap_or("").len() as f32,
-                    size * 1.2,
-                )
-            }
-        };
+        let f = self.font.medium();
+        let (w, h) = f.measure_multiline(text, *size);
+        let last = text.rsplit('\n').next().unwrap_or("");
+        let (last_w, lh) = (f.measure(last, *size).0, f.line_height(*size));
         let lines = text.split('\n').count() as f32;
         let fh = if lines > 0.0 {
             h - lh * (lines - 1.0)
@@ -1319,7 +1316,7 @@ impl Overlay {
     fn build_items(&self) -> Vec<Item> {
         let mut v: Vec<Item> = Vec::new();
         let bounds = self.bounds;
-        let font = self.font.as_ref();
+        let font = &self.font;
         let s = self.chrome_scale();
         let clip = |r: Rect| r.intersect(&bounds).into_iter().collect::<Vec<_>>();
 
@@ -1384,9 +1381,9 @@ impl Overlay {
         } else {
             None
         });
-        if let (Some(r), Some(f)) = (label_target, font) {
+        if let Some(r) = label_target {
             let text = format!("{} × {}", r.w, r.h);
-            let (lw, lh) = chrome::label_size(f, &text, s);
+            let (lw, lh) = chrome::label_size(font, &text, s);
             let gap = px(6.0, s);
             let overlaps = |c: Rect| {
                 bar.as_ref()
@@ -1416,14 +1413,13 @@ impl Overlay {
                     _ => None,
                 },
             };
-            let pad = toolbar::shadow_pad(s);
             v.push(Item {
                 elem: Elem::Bar {
                     origin: Point::new(l.rect.x, l.rect.y),
                     st,
                     s,
                 },
-                pieces: clip(l.rect.inflate(pad)),
+                pieces: clip(toolbar::bounds(l.rect, s)),
             });
         }
 
@@ -1468,8 +1464,7 @@ impl Overlay {
             } else {
                 None
             };
-            let has_text = font.is_some();
-            let (cw, ch) = chrome::loupe_card_size(cs, dims.is_some(), has_text);
+            let (cw, ch) = chrome::loupe_card_size(cs, dims.is_some());
             let mon = self.monitor_rect_at(self.cursor);
             let off = px(20.0, cs);
             let c = self.cursor;
@@ -1495,11 +1490,10 @@ impl Overlay {
                 color: self.pixel_at(c),
                 dims,
                 s: cs,
-                text: has_text,
             };
             v.push(Item {
                 elem: Elem::Loupe(data),
-                pieces: clip(card.inflate(toolbar::shadow_pad(cs))),
+                pieces: clip(chrome::loupe_bounds(card, cs)),
             });
         }
         v
@@ -1561,35 +1555,54 @@ fn merge_rects(mut v: Vec<Rect>) -> Vec<Rect> {
     out
 }
 
-/// Rewrite `r` of `back` from the base layer: bright inside `bright`, dimmed elsewhere.
-fn restore(back: &mut Pixmap, base: &Pixmap, bright: Option<Rect>, r: Rect) {
-    match bright.and_then(|b| b.intersect(&r)) {
+/// How the base layer is shown: scrim-dimmed outside `bright`, plain (optionally tinted) inside.
+#[derive(Clone, Copy)]
+struct Shade {
+    dim: Dim,
+    bright: Option<Rect>,
+    tint: Option<Rgba>,
+}
+
+/// Rewrite `r` of `back` from the base layer: bright inside `shade.bright`, dimmed elsewhere.
+fn restore(back: &mut Pixmap, base: &Pixmap, shade: &Shade, r: Rect) {
+    show(back, base, shade, r, r);
+}
+
+/// Copy `src_r` of `src` to the destination rect `at` of `back` (same size): pixels inside the
+/// bright rect are copied as-is (plus the tint), the rest gets the scrim.
+fn show(back: &mut Pixmap, src: &Pixmap, shade: &Shade, at: Rect, src_r: Rect) {
+    let (ox, oy) = (src_r.x - at.x, src_r.y - at.y);
+    let to_src = |r: Rect| r.translate(ox, oy);
+    match shade.bright.and_then(|b| b.intersect(&at)) {
         Some(i) => {
-            canvas::blit(base, i, back, i.x, i.y);
-            for o in rect_minus(r, i) {
-                canvas::blit_dimmed(base, o, back, o.x, o.y);
+            canvas::blit(src, to_src(i), back, i.x, i.y);
+            if let Some(t) = shade.tint {
+                canvas::fill_rect_px(back, i, t);
+            }
+            for o in rect_minus(at, i) {
+                canvas::blit_dimmed(src, to_src(o), back, o.x, o.y, shade.dim);
             }
         }
-        None => canvas::blit_dimmed(base, r, back, r.x, r.y),
+        None => canvas::blit_dimmed(src, src_r, back, at.x, at.y, shade.dim),
     }
 }
 
 /// Draw `anns` on a scratch copy of the base layer and copy the result to `back`, bright inside
-/// `bright` and dimmed outside (so annotations dim together with the rest of the frame).
+/// the bright rect and dimmed outside (so annotations dim together with the rest of the frame).
 fn draw_preview(
     back: &mut Pixmap,
     base: &Pixmap,
-    bright: Option<Rect>,
+    shade: &Shade,
     anns: &[Annotation],
     area: Rect,
-    font: Option<&Font>,
+    font: &Font,
 ) {
     let Some(b) = area.intersect(&canvas::pm_rect(base)) else {
         return;
     };
     // Common case: everything lies inside the bright selection, where `back` already holds the
     // base layer (restored just before) — draw straight onto it, in frame coordinates.
-    if bright.is_some_and(|br| br.contains_rect(&b)) {
+    if shade.bright.is_some_and(|br| br.contains_rect(&b)) {
         render::render_annotations(back, anns, (0, 0), font);
         return;
     }
@@ -1598,30 +1611,22 @@ fn draw_preview(
     };
     canvas::blit(base, b, &mut scratch, 0, 0);
     render::render_annotations(&mut scratch, anns, (b.x, b.y), font);
-    let local = |r: Rect| r.translate(-b.x, -b.y);
-    match bright.and_then(|br| br.intersect(&b)) {
-        Some(i) => {
-            canvas::blit(&scratch, local(i), back, i.x, i.y);
-            for o in rect_minus(b, i) {
-                canvas::blit_dimmed(&scratch, local(o), back, o.x, o.y);
-            }
-        }
-        None => canvas::blit_dimmed(&scratch, local(b), back, b.x, b.y),
-    }
+    show(back, &scratch, shade, b, Rect::new(0, 0, b.w, b.h));
 }
 
 fn draw_elem(
     back: &mut Pixmap,
     base: &Pixmap,
     frame: &Pixmap,
-    bright: Option<Rect>,
-    font: Option<&Font>,
+    shade: &Shade,
+    font: &Font,
+    p: &Palette,
     e: &Elem,
 ) {
     match e {
         Elem::Preview { ann, outline } => {
             let area = render::annotation_bounds(ann, font).inflate(2);
-            draw_preview(back, base, bright, std::slice::from_ref(ann), area, font);
+            draw_preview(back, base, shade, std::slice::from_ref(ann), area, font);
             if let Some(r) = outline {
                 canvas::stroke_rect_px(back, *r, 1, Rgba::rgb(255, 255, 255).with_alpha(200));
                 canvas::stroke_rect_px(back, r.inflate(1), 1, Rgba::rgb(0, 0, 0).with_alpha(120));
@@ -1637,33 +1642,22 @@ fn draw_elem(
                 Annotation::Text { text, .. } if text.is_empty() => &[][..],
                 _ => std::slice::from_ref(ann),
             };
-            draw_preview(back, base, bright, drawn, area, font);
-            canvas::stroke_rect_px(back, *fr, 1, toolbar::ACCENT.with_alpha(190));
-            let color = match ann {
-                Annotation::Text { color, .. } => *color,
-                _ => Rgba::rgb(255, 255, 255),
-            };
-            // Caret: contrast ring then ink.
-            canvas::fill_rect_px(
-                back,
-                caret.inflate(1),
-                Rgba::rgb(255, 255, 255).with_alpha(if color.luminance() > 0.5 { 0 } else { 90 }),
-            );
-            canvas::fill_rect_px(back, *caret, color);
+            draw_preview(back, base, shade, drawn, area, font);
+            // Dashed `focus` frame (with a faint contrast line under it) and a 2 px red caret.
+            canvas::dashed_rect_px(back, fr.inflate(1), 5, 4, p.bg.with_alpha(150));
+            canvas::dashed_rect_px(back, *fr, 5, 4, p.focus);
+            canvas::fill_rect_px(back, caret.inflate(1), p.bg.with_alpha(90));
+            canvas::fill_rect_px(back, *caret, p.red);
         }
-        Elem::Snap { rect, s } => chrome::draw_snap(back, *rect, *s),
-        Elem::Border { rect, handles, s } => chrome::draw_border(back, *rect, *handles, *s),
+        Elem::Snap { rect, s } => chrome::draw_snap(back, *rect, *s, p),
+        Elem::Border { rect, handles, s } => chrome::draw_border(back, *rect, *handles, *s, p),
         Elem::Ring { c, tool, size } => chrome::draw_ring(back, *c, *tool, *size),
-        Elem::Label { rect, text, s } => {
-            if let Some(f) = font {
-                chrome::draw_label(back, f, *rect, text, *s);
-            }
-        }
+        Elem::Label { rect, text, s } => chrome::draw_label(back, font, *rect, text, *s, p),
         Elem::Bar { origin, st, s } => {
             let l = toolbar::layout_at(origin.x, origin.y, *s);
-            toolbar::draw(back, &l, st, *s);
+            toolbar::draw(back, &l, st, *s, p);
         }
-        Elem::Loupe(d) => chrome::draw_loupe(back, frame, d, font),
+        Elem::Loupe(d) => chrome::draw_loupe(back, frame, d, font, p),
     }
 }
 

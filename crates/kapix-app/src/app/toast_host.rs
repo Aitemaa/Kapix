@@ -37,22 +37,27 @@ pub fn register() {
 }
 
 /// Show (or replace) the toast. `font` is reused from the caller's session when available and
-/// always dropped before returning, so no font stays resident while idle.
+/// always dropped before returning, so no font stays resident while idle. The palette follows
+/// the configured theme (`[ui] theme`, default: the Windows app mode).
 pub fn show(t: Toast, action: ToastAction, font: Option<Font>) {
-    let font = font.or_else(winutil::load_font);
+    let font = font.unwrap_or_else(winutil::load_font);
+    let palette = winutil::palette(super::cfg().ui.theme);
     let cur = winutil::cursor_pos();
     let (work, scale) = kapix_win::capture::desktop_layout()
         .ok()
         .and_then(|d| d.monitor_at(cur).map(|m| (m.work, m.scale)))
         .unwrap_or((kapix_core::Rect::new(0, 0, 1920, 1080), 1.0));
-    let img = toast::render(&t, font.as_ref(), scale);
+    let rendered = toast::render(&t, &font, &palette, scale);
     drop(font);
+    let (img, card) = (rendered.image, rendered.card);
     if img.width == 0 || img.height == 0 {
         return;
     }
+    // The bitmap carries transparent shadow margins: place it so the visible *card* keeps a
+    // 16 px margin from the work-area edge.
     let margin = (16.0 * scale) as i32;
-    let x = work.right() - img.width as i32 - margin;
-    let y = work.bottom() - img.height as i32 - margin;
+    let x = work.right() - margin - card.right();
+    let y = work.bottom() - margin - card.bottom();
 
     let hwnd = match CUR.with(|c| c.get()) {
         Some(h) => h,

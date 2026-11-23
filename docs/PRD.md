@@ -6,7 +6,7 @@
 **Target Platform:** Windows 10 (1903 / Build 18362+) & Windows 11 (x64 & ARM64)  
 **Primary Stack (100% Rust — FE & BE):**
 - **Rust Backend (`kapix-core`, `kapix-win`):** `windows` crate (DXGI Desktop Duplication, GDI `BitBlt`, Win32 hotkeys/tray/DWM, WinRT `Windows.Media.Ocr`, WIC), `arboard`, `png`/`fdeflate`, `serde` + `toml`
-- **Rust Frontend (`kapix-ui`, `kapix-app`):** `softbuffer` + `tiny-skia` + `ab_glyph` (reading Windows system fonts; pure-Rust `egui` evaluated as alternative) — **zero HTML/CSS/JS, zero WebView2/Electron/Tauri, zero .NET/C++ UI layers**
+- **Rust Frontend (`kapix-ui`, `kapix-app`):** `softbuffer` + `tiny-skia` + `ab_glyph` (embedded Kavox-family Archivo typeface, Segoe UI from Windows for non-Latin fallback; pure-Rust `egui` evaluated as alternative) — **zero HTML/CSS/JS, zero WebView2/Electron/Tauri, zero .NET/C++ UI layers**
 
 ---
 
@@ -168,7 +168,7 @@ flowchart LR
 
     subgraph FE["Rust Frontend (kapix-ui)"]
         OV["Frozen Capture Overlay\n(softbuffer + tiny-skia)"]
-        HUD["Floating Toolbar, Magnifier\nLoupe & Inline Text Input\n(ab_glyph + OS Segoe UI)"]
+        HUD["Floating Toolbar, Magnifier\nLoupe & Inline Text Input\n(ab_glyph + embedded Archivo,\nSegoe UI fallback)"]
         TOAST["Native-Style Toast &\nSettings / Pin Windows"]
     end
 
@@ -210,7 +210,17 @@ Both candidates are **100% Rust frontends** with zero web stack; the trade-off i
 | **UI Development Effort** | Small custom Rust HUD (~400–600 LOC for 1 floating toolbar + loupe + compact settings panel) | Built-in widgets for rich forms & preference tabs |
 
 **Architectural Decision:**  
-Use **Option A (100% pure-Rust `softbuffer` + `tiny-skia` + `ab_glyph` on native Win32 borderless windows)** across the entire frontend (`kapix-ui`): capture overlay, magnifier loupe, floating pill annotation toolbar, lightweight toast notifications, and optional minimal Settings/Pin windows. Because Kapix intentionally avoids complex menus, a compact custom-drawn Rust UI is ~600 lines of clean code, reuses the exact same `tiny-skia` rasterizer for both live preview and flattened export (pixel-perfect WYSIWYG), reads Windows' built-in `Segoe UI` font from `%WINDIR%\Fonts` (`0 B` embedded fonts), and keeps the single `.exe` under **2.5 MB** with sub-30 ms overlay open latency.
+Use **Option A (100% pure-Rust `softbuffer` + `tiny-skia` + `ab_glyph` on native Win32 borderless windows)** across the entire frontend (`kapix-ui`): capture overlay, magnifier loupe, floating pill annotation toolbar, lightweight toast notifications, and optional minimal Settings/Pin windows. Because Kapix intentionally avoids complex menus, a compact custom-drawn Rust UI is ~600 lines of clean code, reuses the exact same `tiny-skia` rasterizer for both live preview and flattened export (pixel-perfect WYSIWYG), embeds the Kavox-family **Archivo** typeface (Regular, Medium, SemiExpanded SemiBold; a ~141 KB Latin subset, OFL-licensed) and falls back to Windows' built-in `Segoe UI` from `%WINDIR%\Fonts` for any glyph Archivo lacks (Cyrillic, CJK, ... in Text annotations and toasts), and keeps the single `.exe` under **2.5 MB** with sub-30 ms overlay open latency.
+
+### 6.4.1 Visual design: Kavox family
+
+Kapix is visually part of the same product family as **Kavox**; the design tokens live in `kapix-ui/src/theme.rs` (`Palette::DARK` / `Palette::LIGHT`) and are copied one-for-one from Kavox's palette:
+
+- **Tokens:** warm neutral grays (never blue/slate) — `bg`, `panel`, `surface`, `surface_2`, `line`, `line_strong`, `text`, `muted`, `faint`, plus `lit` / `on_lit` (the off-white "lit" fill in dark, near-black in light, used for primary buttons and the active tool), `focus`, `scrim` and `shadow`. Radii: field `10`, pad/popover `16`, panel `20`, segment `15`; popovers use a soft y-offset 12 / blur 32 shadow. Borders are 1 px `line`.
+- **Typography:** Archivo — Regular for body (14) and small text (12), Medium for labels/buttons, SemiExpanded SemiBold for headings and step numbers.
+- **Light and dark follow Windows:** `[ui] theme = "system"` (default) reads `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize\AppsUseLightTheme` each time an overlay or toast is shown; `"dark"` / `"light"` force a palette. The overlay scrim, selection frame, loupe, toolbar and toasts all use the same palette.
+- **Red is the single brand accent:** the logo's capture crosshair red `#E8262D` marks the loupe's center pixel, the text caret and the default annotation color; the selection frame, handles, active tool and primary button are neutral (`focus` / `lit`). There is no blue anywhere in the UI.
+- **Icons:** lucide-style stroked icons on a 24-unit grid (stroke 2.0, round caps/joins), drawn from SVG path data with `tiny-skia`; the app mark (tray icon, `kapix.exe` icon) is rasterized from the same geometry as `assets/icon.svg` (`kapix_ui::brand::render_app_icon`).
 
 ### 6.5 Key Subsystem Implementation Details
 
@@ -226,7 +236,7 @@ Use **Option A (100% pure-Rust `softbuffer` + `tiny-skia` + `ab_glyph` on native
 
 #### B. Global Hotkeys, Tray & Manifest
 - **Message-Only Window (`HWND_MESSAGE`):** Handles `WM_HOTKEY`, `WM_DISPLAYCHANGE`, `WM_DPICHANGED`, and tray icon callbacks (`Shell_NotifyIconW`) on a single thread with zero busy loops.
-- **DPI Awareness Manifest:** Embed an application manifest via `build.rs` setting `<dpiAwareness>PerMonitorV2</dpiAwareness>` so Windows never bitmap-stretches the overlay.
+- **DPI Awareness Manifest + Icon:** `build.rs` embeds the application manifest (`<dpiAwareness>PerMonitorV2</dpiAwareness>`, Common-Controls v6, `asInvoker`) so Windows never bitmap-stretches the overlay, together with `assets/icons/icon.ico`, in a single resource script via `winresource` on Windows hosts (build-time only; no runtime code). Cross-builds from non-Windows hosts embed the manifest only, via pure-Rust `embed-manifest`.
 - **PrintScreen Override (Optional):** Disabled by default to avoid fighting Windows; can be enabled via config (with a clean helper link to Windows Settings or optional low-level `WH_KEYBOARD_LL` hook when explicitly opted in).
 
 #### C. Clipboard & Image Encoding
@@ -273,6 +283,10 @@ format = "png" # png | jpeg
 # "auto" uses Windows user profile languages; or BCP-47 tag e.g. "en-US", "ja"
 language = "auto"
 copy_notification = true
+
+[ui]
+# "system" follows the Windows app mode (light/dark) | "dark" | "light"
+theme = "system"
 ```
 
 ### 7.2 Keyboard Shortcuts (During Capture / Annotation)
@@ -320,7 +334,7 @@ panic = "abort"        # Remove unwinding tables (~150-300 KB saved)
 ### Dependency Discipline (100% Pure-Rust Toolchain)
 - **Single-language build:** Zero Node.js, npm, Vite, WebView2, CMake, or C/C++ vendored libraries. The entire frontend and backend compile in one `cargo build --release` invocation (`cargo-deny` / CI check to prevent accidental `cc` or web-runtime dependencies).
 - **`windows` crate:** Enable *only* exact required Win32/WinRT features (`Win32_Graphics_Dxgi`, `Win32_Graphics_Direct3D11`, `Win32_Graphics_Gdi`, `Win32_Graphics_Dwm`, `Win32_Graphics_Imaging`, `Win32_UI_WindowsAndMessaging`, `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_Shell`, `Media_Ocr`, `Graphics_Imaging`, `Storage_Streams`). Never enable broad wildcard features.
-- **No bundled fonts:** Use Windows system fonts (`Segoe UI` / `Cascadia Mono` loaded from `%WINDIR%\Fonts` via pure-Rust `ab_glyph`) instead of embedding megabytes of TTF files in the binary.
+- **Minimal embedded fonts:** Kapix embeds exactly one typeface family, the Kavox-family **Archivo**, as a ~141 KB Latin subset (3 × ~47 KB TTF: Regular, Medium, SemiExpanded SemiBold; SIL OFL, license text in `assets/fonts/OFL.txt`). Everything else comes from Windows: `Segoe UI` is loaded lazily from `%WINDIR%\Fonts` via pure-Rust `ab_glyph` as the per-glyph fallback for scripts Archivo does not cover. No other font is bundled (never megabytes of TTF in the binary).
 - **Distribution:**
   - Portable single-file `kapix-x64.exe` (`< 2.5 MB`) & `kapix-arm64.exe`
   - **Winget** (`winget install ...`) and **Scoop** manifests for 1-command install.
@@ -338,7 +352,7 @@ panic = "abort"        # Remove unwinding tables (~150-300 KB saved)
 
 ### Milestone 2: Minimal Annotation & Window Snap (Weeks 3–4)
 - Smart window auto-snap via `DwmGetWindowAttribute`.
-- Pure-Rust floating pill toolbar + `tiny-skia` vector annotations: Arrow, Rectangle, Pen, Highlighter, Text (`ab_glyph` + OS font), Pixelate Redaction, Step Counter, Undo/Redo.
+- Pure-Rust floating pill toolbar + `tiny-skia` vector annotations: Arrow, Rectangle, Pen, Highlighter, Text (`ab_glyph` + embedded Archivo, Segoe UI fallback), Pixelate Redaction, Step Counter, Undo/Redo.
 - Quick Save (`Ctrl+S`) + auto-save templates + `config.toml` hot-reload.
 - **Exit Gate:** Pixel-accurate WYSIWYG export; verified irreversible pixelation; binary `≤ 2.5 MB`.
 

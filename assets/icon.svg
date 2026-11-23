@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Kavox family: dark tile + split K. Kapix: viewfinder corners + red capture crosshair. -->
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="#222222"/>
+  <g stroke="#4a4a4a" stroke-width="44" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M150 290 V200 A50 50 0 0 1 200 150 H290"/>
+    <path d="M734 150 H824 A50 50 0 0 1 874 200 V290"/>
+    <path d="M874 734 V824 A50 50 0 0 1 824 874 H734"/>
+    <path d="M290 874 H200 A50 50 0 0 1 150 824 V734"/>
+  </g>
+  <g stroke="#ffffff" stroke-width="72" stroke-linecap="round">
+    <line x1="327.4" y1="268.0" x2="327.4" y2="756.0"/>
+    <line x1="497.2" y1="445.4" x2="688.6" y2="268.0"/>
+    <line x1="497.2" y1="578.6" x2="688.6" y2="756.0"/>
+  </g>
+  <g stroke="#e8262d" stroke-width="32" stroke-linecap="round">
+    <line x1="425.4" y1="456" x2="425.4" y2="568"/>
+    <line x1="397.4" y1="512" x2="453.4" y2="512"/>
+  </g>
+</svg>

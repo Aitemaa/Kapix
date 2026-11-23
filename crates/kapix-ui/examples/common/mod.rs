@@ -4,7 +4,9 @@
 use kapix_core::config::DefaultAction;
 use kapix_core::{Image, Monitor, Rect, Rgba, VirtualDesktop};
 use kapix_ui::canvas::{image_to_pixmap, paint, pixmap_to_image, sk_color};
-use kapix_ui::{Font, Input, Key, Mods, MouseButton, Outcome, Overlay, OverlayInit, OverlayMode};
+use kapix_ui::{
+    Font, Input, Key, Mods, MouseButton, Outcome, Overlay, OverlayInit, OverlayMode, Palette,
+};
 use tiny_skia::{
     FillRule, GradientStop, LinearGradient, PathBuilder, Pixmap, Point, SpreadMode, Transform,
 };
@@ -12,18 +14,17 @@ use tiny_skia::{
 pub const W: u32 = 2560;
 pub const H: u32 = 1440;
 
-pub fn load_font() -> Option<Font> {
+/// Archivo plus any broad-coverage system face as the non-Latin fallback (like the host does
+/// with Segoe UI on Windows).
+pub fn load_font() -> Font {
     let home = std::env::var("HOME").unwrap_or_default();
     let candidates = [
         "C:\\Windows\\Fonts\\segoeui.ttf".to_string(),
+        "/usr/share/fonts/noto/NotoSans-Regular.ttf".to_string(),
         format!("{home}/.local/share/fonts/inir/inter/Inter-Regular.ttf"),
-        "/usr/share/fonts/TTF/Roboto-Regular.ttf".to_string(),
-        "/usr/share/fonts/TTF/OpenSans-Regular.ttf".to_string(),
         "/usr/share/fonts/TTF/DejaVuSans.ttf".to_string(),
     ];
-    candidates
-        .iter()
-        .find_map(|p| std::fs::read(p).ok().and_then(Font::from_bytes))
+    Font::new(candidates.iter().find_map(|p| std::fs::read(p).ok()))
 }
 
 /// Two 1280×1440 monitors; the left one sits at negative virtual X (scale 1.0), the right one is
@@ -469,7 +470,8 @@ pub fn scene(font: Option<&Font>) -> Scene {
 
 pub fn new_overlay(
     scene: &Scene,
-    font: Option<Font>,
+    font: Font,
+    palette: Palette,
     cursor: (i32, i32),
     action: DefaultAction,
     mode: OverlayMode,
@@ -483,6 +485,7 @@ pub fn new_overlay(
         show_magnifier: true,
         window_snap: true,
         font,
+        palette,
         cursor,
     })
 }
