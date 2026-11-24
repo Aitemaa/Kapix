@@ -1,0 +1,16 @@
+// Kapix — Niri window rules & recommended keybinds
+// Paste into ~/.config/niri/config.kdl
+
+window-rule {
+    match app-id=r#"^kapix\.pin$"#
+    open-floating true
+    draw-border-with-background false
+}
+
+// Recommended keybinds (add inside your `binds { ... }` block):
+// binds {
+//     Mod+Shift+S { spawn "kapix"; }
+//     Mod+Shift+O { spawn "kapix" "capture" "--mode" "ocr"; }
+//     Print       { spawn "kapix" "capture" "--mode" "fullscreen"; }
+//     Alt+Print   { spawn "kapix" "capture" "--mode" "window"; }
+// }

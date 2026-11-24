@@ -1,0 +1,17 @@
+[package]
+name = "kapix-linux"
+description = "Linux (Wayland) OS services for Kapix: screencopy capture, wl_shm, clipboard, OCR, dialogs, theme, paths."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+kapix-core.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+jpeg-encoder.workspace = true
+rustix.workspace = true
+wayrs-client.workspace = true
+wayrs-protocols.workspace = true
