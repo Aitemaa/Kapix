@@ -77,6 +77,7 @@ pub fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match cli::parse(&args) {
         Ok(cli::Cmd::Daemon) => daemon::run(),
+        Ok(cli::Cmd::Quit) => daemon::quit(),
         Ok(cli::Cmd::Help) => cli::print(cli::HELP),
         Ok(cli::Cmd::Version) => cli::print(concat!("kapix ", env!("CARGO_PKG_VERSION"), "\n")),
         Ok(cli::Cmd::Capture(o)) => cli::run_capture(o),

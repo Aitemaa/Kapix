@@ -29,6 +29,7 @@ Kapix - instant screenshot, annotation and OCR tool
 USAGE:
     kapix                         start the tray daemon (a second launch starts a region capture)
     kapix capture [OPTIONS]       one-shot capture, no daemon needed
+    kapix quit                    stop the running tray daemon
     kapix --help | --version
 
 CAPTURE OPTIONS:
@@ -59,6 +60,7 @@ pub struct Opts {
 
 pub enum Cmd {
     Daemon,
+    Quit,
     Help,
     Version,
     Capture(Opts),
@@ -71,6 +73,7 @@ pub fn parse(args: &[String]) -> Result<Cmd, String> {
     match first.as_str() {
         "--help" | "-h" | "help" => Ok(Cmd::Help),
         "--version" | "-V" => Ok(Cmd::Version),
+        "quit" => Ok(Cmd::Quit),
         "capture" => {
             let mut o = Opts {
                 mode: Mode::Region,

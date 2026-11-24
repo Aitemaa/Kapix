@@ -85,6 +85,7 @@ kapix capture --mode region --copy
 kapix capture --mode ocr --stdout
 kapix capture --mode window --out shot.png
 kapix capture --mode fullscreen [--gdi] --out shot.jpg
+kapix quit                             # Windows: stop the running tray daemon
 ```
 
 ## Workspace
@@ -126,16 +127,32 @@ Optional runtime helpers (all degrade gracefully when absent):
 
 ### Windows
 
+Download `kapix-<version>-windows-x64-setup.exe` from the [Releases](https://github.com/Aitemaa/Kapix/releases) page and run it. No admin rights are needed: it installs for your user into `%LOCALAPPDATA%\Programs\Kapix` (choose "for all users" on the first page to install into Program Files instead). It adds:
+
+- a Start menu entry, so **Kapix** shows up in Windows search and `Win+R` (`kapix`)
+- optional: a desktop shortcut and starting at sign-in (keeps `Ctrl+Shift+S` / `Ctrl+Shift+O` hotkeys ready)
+- an uninstaller in **Settings → Apps**. Uninstalling never deletes your config in `%APPDATA%\Kapix` or your saved screenshots.
+
+A portable zip (`kapix-<version>-windows-x64.zip`) and standalone `kapix.exe` / `kapix-arm64.exe` are attached to each release as well. To build from source:
+
 ```
 cargo build --release -p kapix-app          # on Windows → target/release/kapix.exe
+```
+
+To build the Inno Setup 6 installer locally on Windows:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=0.1.1 /DSourceDir="$PWD\target\release" /DOutputDir="$PWD\target\release" packaging\windows\kapix.iss
 ```
 
 Cross-compiling from Linux: `cargo xwin build --release -p kapix-app --target x86_64-pc-windows-msvc`
 (needs `cargo install cargo-xwin`, `clang`, `lld`).
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy, all tests on Windows and Linux, a pure-Rust dependency
-check, the PRD size gate (warn > 2.5 MiB, fail > 4 MiB), `ldd` check on Linux, and CLI capture smoke tests.
-Tagging `vX.Y.Z` builds `kapix-x64.exe`, `kapix-arm64.exe`, and `kapix-<ver>-linux-x64.tar.gz` with SHA-256 sums into a draft release.
+check, the PRD size gate (warn > 2.5 MiB, fail > 4 MiB), `ldd` check on Linux, CLI capture smoke tests,
+and builds the Windows installer. Tagging `vX.Y.Z` builds `kapix-<ver>-windows-x64-setup.exe`,
+`kapix-<ver>-windows-x64.zip`, `kapix.exe`, `kapix-arm64.exe`, and `kapix-<ver>-linux-x64.tar.gz` with
+SHA-256 sums into a draft release.
 
 ## Deviations from the PRD
 

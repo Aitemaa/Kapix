@@ -1,7 +1,8 @@
 name: Release
 
-# Push a version tag (git tag v0.1.0 && git push origin v0.1.0) to build portable x64 + ARM64
-# executables with SHA-256 checksums and attach them to a draft GitHub release.
+# Push a version tag (git tag v0.1.0 && git push origin v0.1.0) to build the Windows installer,
+# portable zip, standalone x64 + ARM64 executables, and Linux tarball with SHA-256 checksums
+# and attach them to a draft GitHub release.
 # "Run workflow" builds them as artifacts without a release.
 on:
   push:
@@ -35,22 +36,57 @@ jobs:
 
       - name: Build x64 and ARM64
         run: |
-          cargo build --release -p kapix-app --target x86_64-pc-windows-msvc
-          cargo build --release -p kapix-app --target aarch64-pc-windows-msvc
+          cargo build --release -p kapix-app --locked --target x86_64-pc-windows-msvc
+          cargo build --release -p kapix-app --locked --target aarch64-pc-windows-msvc
 
-      - name: Stage portable executables and checksums
+      - name: Package Windows release zip and portable executables
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.version.outputs.version }}"
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $x64 = "target/x86_64-pc-windows-msvc/release/kapix.exe"
+          $arm64 = "target/aarch64-pc-windows-msvc/release/kapix.exe"
+          Copy-Item $x64 dist/kapix.exe
+          Copy-Item $arm64 dist/kapix-arm64.exe
+
+          $stage = "target/x86_64-pc-windows-msvc/release/kapix-$ver-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item $x64 "$stage/kapix.exe"
+          Copy-Item LICENSE "$stage/"
+          Compress-Archive -Path "$stage/*" -DestinationPath "dist/kapix-$ver-windows-x64.zip" -Force
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $source = (Resolve-Path target/x86_64-pc-windows-msvc/release).Path
+          $out = (Resolve-Path dist).Path
+          & $iscc /Q "/DAppVersion=${{ steps.version.outputs.version }}" "/DSourceDir=$source" "/DOutputDir=$out" packaging/windows/kapix.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item dist/kapix-*-windows-x64-setup.exe | ForEach-Object { Write-Host ("{0}: {1:N0} bytes" -f $_.Name, $_.Length) }
+
+      - name: Checksums
         shell: bash
         run: |
-          mkdir -p dist
-          cp target/x86_64-pc-windows-msvc/release/kapix.exe dist/kapix-x64.exe
-          cp target/aarch64-pc-windows-msvc/release/kapix.exe dist/kapix-arm64.exe
-          cd dist && sha256sum kapix-*.exe > SHA256SUMS.txt && cat SHA256SUMS.txt && ls -l
+          cd dist
+          sha256sum kapix-*-windows-x64-setup.exe kapix.exe kapix-arm64.exe kapix-*-windows-x64.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          ls -lh
 
       - name: Attach to a draft release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/*
+          files: |
+            dist/kapix-*-windows-x64-setup.exe
+            dist/kapix.exe
+            dist/kapix-arm64.exe
+            dist/kapix-*-windows-x64.zip
+            dist/SHA256SUMS.txt
           draft: true
           generate_release_notes: true
 
@@ -59,7 +95,13 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: kapix-${{ steps.version.outputs.version }}-windows
-          path: dist/*
+          path: |
+            dist/kapix-*-windows-x64-setup.exe
+            dist/kapix.exe
+            dist/kapix-arm64.exe
+            dist/kapix-*-windows-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
 
   linux:
     runs-on: ubuntu-latest

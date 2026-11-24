@@ -46,7 +46,11 @@ fn embed() {
 </assembly>
 "#;
     let mut res = winresource::WindowsResource::new();
-    res.set_icon(ICON).set_manifest(MANIFEST);
+    res.set_icon(ICON)
+        .set_manifest(MANIFEST)
+        // Task Manager, Startup Apps, and Start show FileDescription/ProductName rather than the crate description.
+        .set("FileDescription", "Kapix")
+        .set("ProductName", "Kapix");
     res.compile().expect("unable to compile Windows resources");
 }
 

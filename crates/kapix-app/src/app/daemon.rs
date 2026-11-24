@@ -8,8 +8,8 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW,
-    PostMessageW, PostQuitMessage, RegisterWindowMessageW, WINDOW_EX_STYLE, WM_CONTEXTMENU,
-    WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WS_OVERLAPPED,
+    PostMessageW, PostQuitMessage, RegisterWindowMessageW, WINDOW_EX_STYLE, WM_CLOSE,
+    WM_CONTEXTMENU, WM_DESTROY, WM_HOTKEY, WM_LBUTTONUP, WM_RBUTTONUP, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
@@ -28,6 +28,18 @@ pub fn register_classes() {
     overlay_host::register();
     toast_host::register();
     pin::register();
+}
+
+/// Ask a running daemon (if any) to unregister hotkeys, remove the tray icon, and exit.
+pub fn quit() -> i32 {
+    // SAFETY: `KapixDaemon` is a static NUL-terminated class name; `PostMessageW` is safe
+    // even if the target window closes concurrently.
+    unsafe {
+        if let Ok(h) = FindWindowW(w!("KapixDaemon"), PCWSTR::null()) {
+            let _ = PostMessageW(Some(h), WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+    }
+    0
 }
 
 pub fn run() -> i32 {
@@ -139,6 +151,9 @@ extern "system" fn proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT
             let msg = unsafe { Box::from_raw(lp.0 as *mut actions::Worker) };
             actions::handle_worker(*msg);
         }
+        WM_CLOSE => unsafe {
+            let _ = DestroyWindow(hwnd);
+        },
         WM_DESTROY => {
             settings::unregister_all(hwnd);
             tray::remove(hwnd);
