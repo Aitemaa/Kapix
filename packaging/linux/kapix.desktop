@@ -1,0 +1,24 @@
+[Desktop Entry]
+Type=Application
+Name=Kapix
+GenericName=Screenshot & Annotation Tool
+Comment=Instant native pure-Rust screenshot, annotation and OCR
+Exec=kapix
+Icon=kapix
+Terminal=false
+Categories=Graphics;Utility;
+StartupNotify=false
+StartupWMClass=kapix
+Actions=region;ocr;fullscreen;
+
+[Desktop Action region]
+Name=Capture Region
+Exec=kapix capture --mode region
+
+[Desktop Action ocr]
+Name=Capture Text (OCR)
+Exec=kapix capture --mode ocr
+
+[Desktop Action fullscreen]
+Name=Capture Fullscreen
+Exec=kapix capture --mode fullscreen

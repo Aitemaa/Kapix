@@ -1,0 +1,33 @@
+# Maintainer: Ignatius Karel <https://github.com/Aitemaa/Kapix>
+pkgname=kapix
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Instant native pure-Rust screenshot, annotation & OCR tool for Wayland/Niri"
+arch=('x86_64')
+url="https://github.com/Aitemaa/Kapix"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+optdepends=(
+    'wl-clipboard: copy screenshots and OCR text to the Wayland clipboard'
+    'tesseract: offline OCR text extraction'
+    'libnotify: desktop copy/save notifications'
+    'zenity: native Save As dialog'
+)
+makedepends=('rust' 'cargo')
+source=()
+
+build() {
+    cd "$startdir/../.."
+    cargo build --release -p kapix-app --locked
+}
+
+package() {
+    cd "$startdir/../.."
+    install -Dm755 "target/release/kapix" "$pkgdir/usr/bin/kapix"
+    install -Dm644 "packaging/linux/kapix.desktop" "$pkgdir/usr/share/applications/kapix.desktop"
+    install -Dm644 "assets/icon.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/kapix.svg"
+    install -Dm644 "assets/icon.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/kapix.pin.svg"
+    install -Dm644 "packaging/niri/kapix.kdl" "$pkgdir/usr/share/doc/kapix/niri-kapix.kdl"
+    install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "assets/fonts/OFL.txt" "$pkgdir/usr/share/licenses/$pkgname/OFL.txt"
+}

@@ -76,18 +76,64 @@ jobs:
             smoke*.png
           if-no-files-found: ignore
 
-  linux-ui:
+  linux:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Test platform-independent crates
-        run: cargo test -p kapix-core -p kapix-ui
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Pure-Rust dependency check (no cc / cmake / pkg-config / wayland-sys / webview)
+        run: |
+          tree=$(cargo tree --workspace -e normal,build --prefix none --format '{p}')
+          bad=$(echo "$tree" | grep -E '^(cc|cmake|pkg-config|wayland-sys|webview2|wry|tauri|winit|wgpu|ort|tesseract) ' || true)
+          if [ -n "$bad" ]; then echo "::error::Forbidden dependencies: $bad"; exit 1; fi
+          echo "OK: $(echo "$tree" | sort -u | wc -l) crates, all pure Rust"
+
+      - name: Build release
+        run: cargo build --release -p kapix-app
+
+      - name: Binary size & dynamic library gate
+        run: |
+          size=$(stat -c %s target/release/kapix)
+          echo "kapix (linux): $size bytes ($(awk "BEGIN{printf \"%.2f\", $size/1048576}") MiB)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$size" -gt "$SIZE_HARD_CAP" ]; then echo "::error::kapix exceeds the 4 MiB hard cap"; exit 1; fi
+          if [ "$size" -gt "$SIZE_WARN" ]; then echo "::warning::kapix is above the 2.5 MiB target"; fi
+          libs=$(ldd target/release/kapix)
+          echo "$libs"
+          if echo "$libs" | grep -Ei 'libwayland|libX11|libgtk|libQt|libfontconfig'; then
+            echo "::error::Unexpected GUI shared library dependency"; exit 1
+          fi
+
+      - name: Smoke test CLI & install script syntax
+        run: |
+          ./target/release/kapix --version
+          ./target/release/kapix --help > /dev/null
+          bash -n packaging/linux/install.sh
+
       - name: Render UI snapshots
         run: cargo run --release -p kapix-ui --example snapshots
+
       - uses: actions/upload-artifact@v7
+        if: always()
         with:
-          name: ui-snapshots
-          path: snapshots-out/
+          name: kapix-linux-x64
+          path: |
+            target/release/kapix
+            packaging/linux/kapix.desktop
+            packaging/linux/install.sh
+            packaging/niri/kapix.kdl
+            snapshots-out/
+          if-no-files-found: ignore

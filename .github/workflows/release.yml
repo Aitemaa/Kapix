@@ -58,5 +58,62 @@ jobs:
         if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v7
         with:
-          name: kapix-${{ steps.version.outputs.version }}
+          name: kapix-${{ steps.version.outputs.version }}-windows
           path: dist/*
+
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the tag matches the workspace version
+        id: version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.ref_type }}" = "tag" ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml."
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build Linux x64
+        run: cargo build --release -p kapix-app --locked
+
+      - name: Package Linux tarball and checksums
+        run: |
+          ver="${{ steps.version.outputs.version }}"
+          stage="dist/kapix-${ver}-linux-x64"
+          mkdir -p "$stage/packaging/linux" "$stage/packaging/niri" "$stage/assets"
+          cp target/release/kapix "$stage/"
+          cp packaging/linux/kapix.desktop packaging/linux/install.sh "$stage/packaging/linux/"
+          cp packaging/niri/kapix.kdl "$stage/packaging/niri/"
+          cp assets/icon.svg "$stage/assets/"
+          cp LICENSE "$stage/"
+          tar -C dist -czf "dist/kapix-${ver}-linux-x64.tar.gz" "kapix-${ver}-linux-x64"
+          (cd dist && sha256sum "kapix-${ver}-linux-x64.tar.gz" > SHA256SUMS-linux.txt && cat SHA256SUMS-linux.txt)
+
+      - name: Attach to a draft release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/kapix-*-linux-x64.tar.gz
+            dist/SHA256SUMS-linux.txt
+          draft: true
+          generate_release_notes: true
+
+      - name: Keep as artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v7
+        with:
+          name: kapix-${{ steps.version.outputs.version }}-linux-x64
+          path: |
+            dist/kapix-*-linux-x64.tar.gz
+            dist/SHA256SUMS-linux.txt
