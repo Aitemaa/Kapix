@@ -1,6 +1,6 @@
 [package]
 name = "kapix-app"
-description = "Kapix entrypoint: tray daemon, hotkeys, Win32 window hosts, CLI."
+description = "Kapix entrypoint: Windows tray daemon + Win32 hosts, Linux Wayland overlay/pin hosts, CLI."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -34,6 +34,12 @@ windows = { workspace = true, features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+kapix-linux.workspace = true
+rustix.workspace = true
+wayrs-client.workspace = true
+wayrs-protocols.workspace = true
 
 [build-dependencies]
 # Pure-Rust manifest embedding, used when cross-compiling from a non-Windows host.

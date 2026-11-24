@@ -12,15 +12,29 @@ repository = "https://github.com/Aitemaa/Kapix"
 
 [workspace.dependencies]
 kapix-core = { path = "crates/kapix-core" }
+kapix-linux = { path = "crates/kapix-linux" }
 kapix-ui = { path = "crates/kapix-ui" }
 kapix-win = { path = "crates/kapix-win" }
 serde = { version = "1", features = ["derive"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
 png = "0.18"
+jpeg-encoder = "0.6"
 tiny-skia = { version = "0.12", default-features = false, features = ["std", "simd"] }
 ab_glyph = "0.2"
 windows = "0.62"
 embed-manifest = "1.5"
+rustix = { version = "1", features = ["fs", "mm", "event", "pipe", "process"] }
+wayrs-client = "1"
+wayrs-protocols = { version = "0.14", features = [
+  "xdg-shell",
+  "xdg-decoration-unstable-v1",
+  "xdg-output-unstable-v1",
+  "wlr-layer-shell-unstable-v1",
+  "wlr-screencopy-unstable-v1",
+  "fractional-scale-v1",
+  "viewporter",
+  "cursor-shape-v1",
+] }
 
 [profile.release]
 opt-level = "z"
