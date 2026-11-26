@@ -1095,3 +1095,93 @@ fn snap_highlight_washes_the_window_with_lit() {
     }
     assert_ne!(got, raw);
 }
+
+fn tooltip_item(o: &Overlay) -> Option<(Rect, Btn)> {
+    o.build_items().into_iter().find_map(|it| match it.elem {
+        Elem::Tooltip { rect, btn, .. } => Some((rect, btn)),
+        _ => None,
+    })
+}
+
+#[test]
+fn toolbar_hover_shows_tooltip_and_restores_on_leave() {
+    let mut o = annotating();
+    o.paint();
+    assert_eq!(tooltip_item(&o), None);
+    let baseline = o.buffer().to_vec();
+
+    let bar = o.toolbar_rect().unwrap();
+    let ocr = button_center(&o, Btn::Ocr);
+    mv(&mut o, ocr.x, ocr.y);
+    let (tr, btn) = tooltip_item(&o).expect("tooltip shown on hover");
+    assert_eq!(btn, Btn::Ocr);
+    assert!(tr.y > bar.bottom(), "placed below bar: {tr:?} vs {bar:?}");
+    assert!(
+        Rect::new(0, 0, FW as i32, FH as i32).contains_rect(&tr),
+        "{tr:?}"
+    );
+    assert!(o.paint().is_some());
+    assert_ne!(
+        px(&o, tr.x + tr.w / 2, tr.y + tr.h / 2),
+        baseline[((tr.y + tr.h / 2) as usize * o.w as usize + (tr.x + tr.w / 2) as usize) * 4..]
+            [..4]
+    );
+
+    // Moving away clears the tooltip and restores the exact unhovered buffer.
+    mv(&mut o, 10, 10);
+    assert_eq!(tooltip_item(&o), None);
+    o.paint();
+    assert_eq!(o.buffer(), &baseline[..]);
+}
+
+#[test]
+fn tooltip_flips_above_and_clamps_to_monitor() {
+    let frame_rect = Rect::new(0, 0, FW as i32, FH as i32);
+
+    // Selection at bottom: toolbar is above selection, so tooltip goes above the toolbar.
+    let mut o = overlay();
+    drag(&mut o, (200, 300), (400, 399));
+    let bar = o.toolbar_rect().unwrap();
+    let ocr = button_center(&o, Btn::Ocr);
+    mv(&mut o, ocr.x, ocr.y);
+    let (tr, _) = tooltip_item(&o).expect("tooltip above bar");
+    assert!(tr.bottom() < bar.y, "{tr:?} vs {bar:?}");
+    assert!(frame_rect.contains_rect(&tr), "{tr:?}");
+
+    // Tall selection: toolbar sits near the bottom margin, so tooltip flips above it.
+    let mut o = overlay();
+    drag(&mut o, (20, 5), (FW as i32 - 20, FH as i32 - 5));
+    let bar = o.toolbar_rect().unwrap();
+    let ocr = button_center(&o, Btn::Ocr);
+    mv(&mut o, ocr.x, ocr.y);
+    let (tr, _) = tooltip_item(&o).expect("tooltip flips above near bottom");
+    assert!(tr.bottom() < bar.y, "{tr:?} vs {bar:?}");
+    assert!(frame_rect.contains_rect(&tr), "{tr:?}");
+
+    // Leftmost and rightmost buttons stay clamped inside the monitor.
+    for btn in [Btn::Tool(Tool::Arrow), Btn::Close] {
+        let mut o = overlay();
+        let x0 = if btn == Btn::Close { 600 } else { 10 };
+        drag(&mut o, (x0, 100), (x0 + 80, 180));
+        let c = button_center(&o, btn);
+        mv(&mut o, c.x, c.y);
+        let (tr, got) = tooltip_item(&o).expect("clamped tooltip");
+        assert_eq!(got, btn);
+        assert!(frame_rect.contains_rect(&tr), "{btn:?}: {tr:?}");
+    }
+}
+
+#[test]
+fn arrow_key_nudge_refreshes_tooltip_hover() {
+    let mut o = annotating();
+    let c = button_center(&o, Btn::Ocr);
+    mv(&mut o, c.x, c.y);
+    assert_eq!(tooltip_item(&o).map(|(_, b)| b), Some(Btn::Ocr));
+    for _ in 0..8 {
+        o.handle(Input::KeyDown {
+            key: Key::Up,
+            mods: Mods { shift: true, ..M },
+        });
+    }
+    assert_eq!(tooltip_item(&o), None);
+}
