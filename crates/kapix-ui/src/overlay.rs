@@ -352,6 +352,11 @@ enum Elem {
         st: toolbar::State,
         s: f32,
     },
+    Tooltip {
+        rect: Rect,
+        btn: Btn,
+        s: f32,
+    },
     Loupe(LoupeData),
 }
 
@@ -722,6 +727,39 @@ impl Overlay {
         Some(toolbar::layout_at(x, y, s))
     }
 
+    fn tooltip_placement(&self, bar: &toolbar::Layout, btn: Btn, s: f32) -> Option<Rect> {
+        let sel = self.selection()?;
+        let item = bar.item_rect(btn)?;
+        let (tw, th) = toolbar::tooltip_size(&self.font, btn, s);
+        let mon = self.monitor_rect_at(sel.center());
+        let gap = px(6.0, s);
+        let margin = px(8.0, s);
+        let x = (item.x + item.w / 2 - tw / 2).clamp(
+            mon.x + margin,
+            (mon.right() - tw - margin).max(mon.x + margin),
+        );
+        // Prefer the side of the bar facing away from the selection; flip if off-monitor.
+        let bar_above = bar.rect.bottom() <= sel.y;
+        let above = bar.rect.y - gap - th;
+        let below = bar.rect.bottom() + gap;
+        let y = if bar_above {
+            if above >= mon.y + margin {
+                above
+            } else {
+                below
+            }
+        } else if below + th + margin <= mon.bottom() {
+            below
+        } else {
+            above
+        }
+        .clamp(
+            mon.y + margin,
+            (mon.bottom() - th - margin).max(mon.y + margin),
+        );
+        Some(Rect::new(x, y, tw, th))
+    }
+
     /// Region shown at full brightness: the selection, or the snap highlight while hovering.
     fn bright_rect(&self) -> Option<Rect> {
         if let Some(sel) = self.selection() {
@@ -1057,6 +1095,7 @@ impl Overlay {
                 match self.selection() {
                     Some(sel) => {
                         self.sel = Some(sel.translate(dx, dy).clamp_inside(&self.bounds));
+                        self.hover = self.toolbar_layout().and_then(|l| l.hit(self.cursor));
                         Outcome::Redraw
                     }
                     None => Outcome::None,
@@ -1421,6 +1460,14 @@ impl Overlay {
                 },
                 pieces: clip(toolbar::bounds(l.rect, s)),
             });
+            if let Some(btn) = self.hover {
+                if let Some(tr) = self.tooltip_placement(l, btn, s) {
+                    v.push(Item {
+                        elem: Elem::Tooltip { rect: tr, btn, s },
+                        pieces: clip(tr.inflate(2)),
+                    });
+                }
+            }
         }
 
         // Tool-size ring.
@@ -1657,6 +1704,7 @@ fn draw_elem(
             let l = toolbar::layout_at(origin.x, origin.y, *s);
             toolbar::draw(back, &l, st, *s, p);
         }
+        Elem::Tooltip { rect, btn, s } => toolbar::draw_tooltip(back, font, *rect, *btn, *s, p),
         Elem::Loupe(d) => chrome::draw_loupe(back, frame, d, font, p),
     }
 }

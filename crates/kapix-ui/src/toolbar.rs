@@ -1,10 +1,11 @@
 //! The floating pill toolbar: layout, hit-testing and drawing (vector icons, no assets).
 
-use kapix_core::color::PRESETS;
+use kapix_core::color::{PRESET_NAMES, PRESETS};
 use kapix_core::{Rect, Rgba, Tool};
 use tiny_skia::Pixmap;
 
 use crate::canvas::{fill_circle, fill_rect_px, fill_rrect, stroke_circle, stroke_rrect};
+use crate::font::Font;
 use crate::icons::{self, Icon};
 use crate::shadow;
 use crate::theme::{Palette, RADIUS_FIELD, RADIUS_PAD, mix};
@@ -56,6 +57,18 @@ const SWATCH_R: f32 = 9.0;
 const SEP_SLOT: f32 = 13.0;
 const SEP_H: f32 = 20.0;
 const ICON: f32 = 18.0;
+
+/// Logical tooltip metrics (concentric radii: outer 10, keycap inset 5, inner 5).
+const TIP_H: f32 = 28.0;
+const TIP_PAD_L: f32 = 10.0;
+const TIP_PAD_R: f32 = 5.0;
+const TIP_GAP: f32 = 7.0;
+const TIP_FONT: f32 = 12.0;
+const TIP_KEY_FONT: f32 = 11.0;
+const TIP_KEY_H: f32 = 18.0;
+const TIP_KEY_PAD_X: f32 = 5.0;
+const TIP_KEY_MIN_W: f32 = 18.0;
+const TIP_KEY_R: f32 = 5.0;
 
 /// Toolbar size in physical pixels.
 pub(crate) fn size(s: f32) -> (i32, i32) {
@@ -122,6 +135,84 @@ impl Layout {
             .find(|(r, _)| r.contains(p))
             .map(|(_, b)| *b)
     }
+
+    pub fn item_rect(&self, btn: Btn) -> Option<Rect> {
+        self.items.iter().find(|(_, b)| *b == btn).map(|(r, _)| *r)
+    }
+}
+
+/// Human-readable `(label, shortcut)` tooltip for a toolbar button.
+pub(crate) fn tooltip(btn: Btn) -> (&'static str, &'static str) {
+    match btn {
+        Btn::Tool(Tool::Arrow) => ("Arrow", "A"),
+        Btn::Tool(Tool::Rect) => ("Rectangle", "R"),
+        Btn::Tool(Tool::Pen) => ("Pen", "P"),
+        Btn::Tool(Tool::Highlighter) => ("Highlighter", "H"),
+        Btn::Tool(Tool::Text) => ("Text", "T"),
+        Btn::Tool(Tool::Pixelate) => ("Pixelate", "B"),
+        Btn::Tool(Tool::Step) => ("Step counter", "N"),
+        Btn::Color(i) => {
+            const KEYS: [&str; 6] = ["1", "2", "3", "4", "5", "6"];
+            (PRESET_NAMES[i], KEYS[i])
+        }
+        Btn::Undo => ("Undo", "Ctrl+Z"),
+        Btn::Redo => ("Redo", "Ctrl+Y"),
+        Btn::Ocr => ("Copy text (OCR)", "O"),
+        Btn::Pin => ("Pin to screen", "Ctrl+P"),
+        Btn::Save => ("Save", "Ctrl+S"),
+        Btn::Copy => ("Copy", "Ctrl+C"),
+        Btn::Close => ("Cancel", "Esc"),
+    }
+}
+
+/// Physical size `(w, h)` of the hover tooltip pill for `btn`.
+pub(crate) fn tooltip_size(font: &Font, btn: Btn, s: f32) -> (i32, i32) {
+    let (label, shortcut) = tooltip(btn);
+    let f = font.medium();
+    let lw = f.measure(label, TIP_FONT * s).0;
+    let kw = f.measure(shortcut, TIP_KEY_FONT * s).0;
+    let key_w = (kw + 2.0 * TIP_KEY_PAD_X * s).max(TIP_KEY_MIN_W * s);
+    let w = TIP_PAD_L * s + lw + TIP_GAP * s + key_w + TIP_PAD_R * s;
+    (w.ceil() as i32, px(TIP_H, s))
+}
+
+/// Draw the hover tooltip pill for `btn` inside `r`.
+pub(crate) fn draw_tooltip(pm: &mut Pixmap, font: &Font, r: Rect, btn: Btn, s: f32, p: &Palette) {
+    let (label, shortcut) = tooltip(btn);
+    let radius = RADIUS_FIELD * s;
+    fill_rrect(pm, r, radius, p.panel);
+    stroke_rrect(pm, r, radius, 1.0, p.line);
+
+    let f = font.medium();
+    let lpx = TIP_FONT * s;
+    let lh = f.measure("", lpx).1;
+    let lx = r.x as f32 + TIP_PAD_L * s;
+    let ly = r.y as f32 + (r.h as f32 - lh) / 2.0;
+    f.draw(pm, label, lx, ly, lpx, p.text);
+
+    let kpx = TIP_KEY_FONT * s;
+    let kw = f.measure(shortcut, kpx).0;
+    let key_w = (kw + 2.0 * TIP_KEY_PAD_X * s)
+        .max(TIP_KEY_MIN_W * s)
+        .round() as i32;
+    let key_h = px(TIP_KEY_H, s);
+    let pad_r = px(TIP_PAD_R, s);
+    let kr = Rect::new(
+        r.right() - pad_r - key_w,
+        r.y + (r.h - key_h) / 2,
+        key_w,
+        key_h,
+    );
+    let key_bg = if p.is_dark { p.surface_2 } else { p.surface };
+    fill_rrect(pm, kr, TIP_KEY_R * s, key_bg);
+    f.draw_centered(
+        pm,
+        shortcut,
+        kr.x as f32 + kr.w as f32 / 2.0,
+        kr.y as f32 + kr.h as f32 / 2.0,
+        kpx,
+        p.muted,
+    );
 }
 
 /// Shadow-inclusive bounds of the bar (dirty rect).
@@ -258,6 +349,37 @@ mod tests {
         let (r, b) = l.items[l.items.len() - 2];
         assert_eq!(b, Btn::Copy);
         assert_eq!(l.hit(r.center()), Some(Btn::Copy));
+        assert_eq!(l.item_rect(Btn::Copy), Some(r));
         assert_eq!(l.hit(kapix_core::Point::new(-3, -3)), None);
+    }
+
+    #[test]
+    fn every_button_has_tooltip_and_renders() {
+        let font = crate::font::test_font::load();
+        let l = layout_at(0, 0, 1.0);
+        for &(_, btn) in &l.items {
+            let (label, key) = tooltip(btn);
+            assert!(!label.is_empty(), "{btn:?}");
+            assert!(!key.is_empty(), "{btn:?}");
+            let (w, h) = tooltip_size(&font, btn, 1.0);
+            assert!(w > 40 && h == 28, "{btn:?}: {w}x{h}");
+            let (w15, h15) = tooltip_size(&font, btn, 1.5);
+            assert!(w15 > w && h15 > h, "{btn:?}: {w15}x{h15} vs {w}x{h}");
+        }
+        for p in [Palette::DARK, Palette::LIGHT] {
+            let (w, h) = tooltip_size(&font, Btn::Ocr, 1.0);
+            let mut pm = Pixmap::new((w + 20) as u32, (h + 20) as u32).unwrap();
+            let r = Rect::new(10, 10, w, h);
+            draw_tooltip(&mut pm, &font, r, Btn::Ocr, 1.0, &p);
+            let bg = [p.panel.b, p.panel.g, p.panel.r, 255];
+            let drawn = pm.data().chunks_exact(4).filter(|px| px[3] > 0).count();
+            let ink = pm
+                .data()
+                .chunks_exact(4)
+                .filter(|px| px[3] == 255 && *px != bg)
+                .count();
+            assert!(drawn > (w * h / 2) as usize);
+            assert!(ink > 20, "label + keycap ink drawn");
+        }
     }
 }
